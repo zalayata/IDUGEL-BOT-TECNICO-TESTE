@@ -4,17 +4,23 @@ if (!globalThis.crypto) {
     globalThis.crypto = require('crypto').webcrypto;
 }
 
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const { OpenAI } = require('openai');
 const fs = require('fs');
 const path = require('path');
 
-// ===== VERSÃO ULTRA-ROBUSTA COM SISTEMA DE LOGS AVANÇADO =====
+// ===== VERSÃO MULTIMODAL - ÁUDIO + IMAGENS + TEXTO =====
 
 const THREADS_FILE = './threadMap.json';
 const LOG_FILE = './idugel-conversations.log';
+const MEDIA_DIR = './media_temp';
+
+// Criar diretório para arquivos temporários de mídia
+if (!fs.existsSync(MEDIA_DIR)) {
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
 
 // Sistema de Logs Avançado
 class ConversationLogger {
@@ -42,7 +48,8 @@ class ConversationLogger {
             'THREAD': '\x1b[33m',       // Yellow
             'ERROR': '\x1b[31m',        // Red
             'SUCCESS': '\x1b[32m',      // Green
-            'INFO': '\x1b[34m'          // Blue
+            'INFO': '\x1b[34m',         // Blue
+            'MEDIA': '\x1b[35m'         // Magenta
         };
         
         const color = colors[type] || '\x1b[0m';
@@ -60,7 +67,7 @@ class ConversationLogger {
         }
     }
 
-    logConversation(user, question, answer, threadId, processingTime) {
+    logConversation(user, question, answer, threadId, processingTime, mediaType = 'text') {
         this.log('CONVERSATION', {
             user: user.replace('@s.whatsapp.net', ''),
             question,
@@ -68,7 +75,17 @@ class ConversationLogger {
             answer_length: answer.length,
             thread_id: threadId,
             processing_time_ms: processingTime,
-            processing_time_readable: `${(processingTime / 1000).toFixed(2)}s`
+            processing_time_readable: `${(processingTime / 1000).toFixed(2)}s`,
+            media_type: mediaType
+        });
+    }
+
+    logMedia(action, user, mediaType, details = {}) {
+        this.log('MEDIA', {
+            action,
+            user: user.replace('@s.whatsapp.net', ''),
+            media_type: mediaType,
+            ...details
         });
     }
 
@@ -112,11 +129,13 @@ class ConversationLogger {
             const conversations = (logContent.match(/\[CONVERSATION\]/g) || []).length;
             const errors = (logContent.match(/\[ERROR\]/g) || []).length;
             const threads = (logContent.match(/\[THREAD\]/g) || []).length;
+            const media = (logContent.match(/\[MEDIA\]/g) || []).length;
             
             return {
                 total_conversations: conversations,
                 total_errors: errors,
                 total_thread_operations: threads,
+                total_media_processed: media,
                 log_file_size: `${(fs.statSync(LOG_FILE).size / 1024).toFixed(2)} KB`,
                 last_updated: new Date().toISOString()
             };
@@ -189,6 +208,123 @@ function isValidThreadId(threadId) {
         return false;
     }
     return /^thread_[a-zA-Z0-9_-]+$/.test(threadId);
+}
+
+// Função para processar imagem com GPT-4 Vision
+async function processImageWithVision(imagePath, userMessage = '') {
+    try {
+        logger.logInfo('Processando imagem com GPT-4 Vision', { 
+            image_path: imagePath,
+            user_message: userMessage 
+        });
+
+        // Ler a imagem e converter para base64
+        const imageBuffer = fs.readFileSync(imagePath);
+        const base64Image = imageBuffer.toString('base64');
+        const mimeType = path.extname(imagePath).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
+
+        const response = await openai.chat.completions.create({
+            model: "gpt-4-vision-preview",
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: userMessage || "Analise esta imagem e descreva o que você vê de forma detalhada e útil."
+                        },
+                        {
+                            type: "image_url",
+                            image_url: {
+                                url: `data:${mimeType};base64,${base64Image}`
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens: 1000
+        });
+
+        const analysis = response.choices[0].message.content;
+        logger.logSuccess('Imagem processada com sucesso', {
+            analysis_length: analysis.length
+        });
+
+        return analysis;
+    } catch (error) {
+        logger.logError(error, { context: 'processImageWithVision', image_path: imagePath });
+        throw error;
+    }
+}
+
+// Função para processar áudio com Whisper
+async function processAudioWithWhisper(audioPath) {
+    try {
+        logger.logInfo('Processando áudio com Whisper', { 
+            audio_path: audioPath 
+        });
+
+        const response = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(audioPath),
+            model: "whisper-1",
+            language: "pt"
+        });
+
+        const transcription = response.text;
+        logger.logSuccess('Áudio transcrito com sucesso', {
+            transcription_length: transcription.length,
+            transcription: transcription.substring(0, 200) + (transcription.length > 200 ? '...' : '')
+        });
+
+        return transcription;
+    } catch (error) {
+        logger.logError(error, { context: 'processAudioWithWhisper', audio_path: audioPath });
+        throw error;
+    }
+}
+
+// Função para baixar mídia do WhatsApp
+async function downloadWhatsAppMedia(message, messageType) {
+    try {
+        const mediaData = await downloadMediaMessage(message, 'buffer', {});
+        
+        // Determinar extensão baseada no tipo
+        let extension = '.bin';
+        if (messageType === 'imageMessage') {
+            extension = message.message.imageMessage.mimetype === 'image/png' ? '.png' : '.jpg';
+        } else if (messageType === 'audioMessage') {
+            extension = '.ogg'; // WhatsApp usa OGG para áudio
+        }
+
+        // Criar nome único para o arquivo
+        const fileName = `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}${extension}`;
+        const filePath = path.join(MEDIA_DIR, fileName);
+
+        // Salvar arquivo
+        fs.writeFileSync(filePath, mediaData);
+        
+        logger.logMedia('DOWNLOAD', message.key.remoteJid, messageType, {
+            file_path: filePath,
+            file_size: `${(mediaData.length / 1024).toFixed(2)} KB`
+        });
+
+        return filePath;
+    } catch (error) {
+        logger.logError(error, { context: 'downloadWhatsAppMedia', messageType });
+        throw error;
+    }
+}
+
+// Função para limpar arquivos temporários
+function cleanupTempFile(filePath) {
+    try {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            logger.logInfo('Arquivo temporário removido', { file_path: filePath });
+        }
+    } catch (error) {
+        logger.logError(error, { context: 'cleanupTempFile', file_path: filePath });
+    }
 }
 
 // Classe ThreadManager ultra-segura
@@ -349,27 +485,127 @@ async function connectToWhatsApp() {
         const message = m.messages[0];
         if (!message.message || message.key.fromMe) return;
 
-        const messageText = message.message.conversation || message.message.extendedTextMessage?.text || '';
         const from = message.key.remoteJid;
         
+        // Detectar tipo de mensagem
+        const messageTypes = Object.keys(message.message);
+        const messageType = messageTypes[0];
+
         logger.logInfo('Nova mensagem recebida', {
             from: from.replace('@s.whatsapp.net', ''),
-            message: messageText,
+            message_type: messageType,
             timestamp: new Date().toISOString()
         });
 
-        if (messageText.toLowerCase() === 'oi' || messageText.toLowerCase() === 'hello') {
-            const response = 'Olá! Eu sou a IA do Grupo Idugel. Como posso ajudá-lo?';
-            await sock.sendMessage(from, { text: response });
-            logger.logConversation(from, messageText, response, 'greeting', 0);
-        } else if (messageText.toLowerCase().includes('teste')) {
-            const response = '✅ IA Idugel funcionando!';
-            await sock.sendMessage(from, { text: response });
-            logger.logConversation(from, messageText, response, 'test', 0);
-        } else if (messageText.trim()) {
-            await processAIMessage(from, messageText);
+        try {
+            if (messageType === 'conversation' || messageType === 'extendedTextMessage') {
+                // Mensagem de texto normal
+                const messageText = message.message.conversation || message.message.extendedTextMessage?.text || '';
+                
+                if (messageText.toLowerCase() === 'oi' || messageText.toLowerCase() === 'hello') {
+                    const response = 'Olá! Eu sou a IA do Grupo Idugel. Como posso ajudá-lo?\n\n🎯 *Funcionalidades:*\n📝 Respondo perguntas em texto\n🖼️ Analiso imagens que você enviar\n🎵 Transcrevo áudios para texto\n\nEnvie sua pergunta, foto ou áudio!';
+                    await sock.sendMessage(from, { text: response });
+                    logger.logConversation(from, messageText, response, 'greeting', 0);
+                } else if (messageText.toLowerCase().includes('teste')) {
+                    const response = '✅ IA Idugel funcionando!\n\n🚀 *Recursos Ativos:*\n📝 Processamento de texto\n🖼️ Análise de imagens (GPT-4 Vision)\n🎵 Transcrição de áudio (Whisper)\n🧠 Sistema de memória por usuário';
+                    await sock.sendMessage(from, { text: response });
+                    logger.logConversation(from, messageText, response, 'test', 0);
+                } else if (messageText.trim()) {
+                    await processAIMessage(from, messageText, 'text');
+                }
+            } else if (messageType === 'imageMessage') {
+                // Mensagem com imagem
+                await processMediaMessage(message, from, 'image');
+            } else if (messageType === 'audioMessage') {
+                // Mensagem com áudio
+                await processMediaMessage(message, from, 'audio');
+            } else {
+                // Tipo de mensagem não suportado
+                await sock.sendMessage(from, { 
+                    text: '🤖 Desculpe, ainda não consigo processar este tipo de mídia.\n\n✅ *Tipos suportados:*\n📝 Texto\n🖼️ Imagens (JPG, PNG)\n🎵 Áudios\n\nEnvie um desses tipos para eu poder ajudar!' 
+                });
+            }
+        } catch (error) {
+            logger.logError(error, { 
+                context: 'message_handler',
+                from: from.replace('@s.whatsapp.net', ''),
+                message_type: messageType
+            });
+            
+            await sock.sendMessage(from, { 
+                text: '❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns segundos.' 
+            });
         }
     });
+}
+
+// Função para processar mensagens de mídia
+async function processMediaMessage(message, from, mediaType) {
+    const startTime = Date.now();
+    let tempFilePath = null;
+    
+    try {
+        // Baixar mídia
+        const messageTypeKey = mediaType === 'image' ? 'imageMessage' : 'audioMessage';
+        tempFilePath = await downloadWhatsAppMedia(message, messageTypeKey);
+        
+        let processedContent = '';
+        let userMessage = '';
+        
+        if (mediaType === 'image') {
+            // Verificar se há texto junto com a imagem
+            userMessage = message.message.imageMessage.caption || '';
+            
+            // Processar imagem com GPT-4 Vision
+            processedContent = await processImageWithVision(tempFilePath, userMessage);
+            
+            logger.logMedia('PROCESS_IMAGE', from, 'image', {
+                caption: userMessage,
+                analysis_length: processedContent.length
+            });
+            
+        } else if (mediaType === 'audio') {
+            // Transcrever áudio com Whisper
+            const transcription = await processAudioWithWhisper(tempFilePath);
+            
+            if (transcription.trim()) {
+                // Processar transcrição como mensagem de texto
+                await processAIMessage(from, transcription, 'audio');
+                return; // Sair aqui pois processAIMessage já enviará a resposta
+            } else {
+                processedContent = '🎵 Recebi seu áudio, mas não consegui transcrever o conteúdo. Pode tentar enviar novamente?';
+            }
+            
+            logger.logMedia('PROCESS_AUDIO', from, 'audio', {
+                transcription: transcription.substring(0, 200) + (transcription.length > 200 ? '...' : ''),
+                transcription_length: transcription.length
+            });
+        }
+        
+        // Enviar resposta
+        if (processedContent) {
+            await sock.sendMessage(from, { text: processedContent });
+            
+            const processingTime = Date.now() - startTime;
+            logger.logConversation(from, `[${mediaType.toUpperCase()}] ${userMessage}`, processedContent, 'direct_media', processingTime, mediaType);
+        }
+        
+    } catch (error) {
+        logger.logError(error, { 
+            context: 'processMediaMessage',
+            from: from.replace('@s.whatsapp.net', ''),
+            media_type: mediaType
+        });
+        
+        await sock.sendMessage(from, { 
+            text: `❌ Desculpe, ocorreu um erro ao processar ${mediaType === 'image' ? 'sua imagem' : 'seu áudio'}. Tente novamente.` 
+        });
+    } finally {
+        // Limpar arquivo temporário
+        if (tempFilePath) {
+            cleanupTempFile(tempFilePath);
+        }
+    }
 }
 
 // Função para criar thread com validação extrema
@@ -449,11 +685,17 @@ async function listMessages(threadId) {
     return await openai.beta.threads.messages.list(cleanThreadId);
 }
 
-// Função principal de processamento
-async function processAIMessage(from, messageText) {
+// Função principal de processamento (atualizada para suportar diferentes tipos)
+async function processAIMessage(from, messageText, sourceType = 'text') {
     const startTime = Date.now();
     
     try {
+        logger.logInfo(`Processando mensagem ${sourceType.toUpperCase()}`, {
+            from: from.replace('@s.whatsapp.net', ''),
+            message: messageText.substring(0, 200) + (messageText.length > 200 ? '...' : ''),
+            source_type: sourceType
+        });
+        
         // Busca thread existente
         let threadId = threadManager.getThreadId(from);
         
@@ -510,13 +752,21 @@ async function processAIMessage(from, messageText) {
         }
 
         if (result) {
-            await sock.sendMessage(from, { text: result });
+            // Adicionar prefixo baseado no tipo de fonte
+            let responsePrefix = '';
+            if (sourceType === 'audio') {
+                responsePrefix = '🎵 *Transcrição do áudio:* "' + messageText + '"\n\n';
+            }
+            
+            const finalResponse = responsePrefix + result;
+            await sock.sendMessage(from, { text: finalResponse });
             
             const processingTime = Date.now() - startTime;
-            logger.logConversation(from, messageText, result, threadId, processingTime);
+            logger.logConversation(from, messageText, finalResponse, threadId, processingTime, sourceType);
             logger.logSuccess('Resposta enviada com sucesso', {
                 user: from.replace('@s.whatsapp.net', ''),
-                processing_time: `${(processingTime / 1000).toFixed(2)}s`
+                processing_time: `${(processingTime / 1000).toFixed(2)}s`,
+                source_type: sourceType
             });
         } else {
             throw new Error('Timeout: Run não completou no tempo esperado');
@@ -527,7 +777,8 @@ async function processAIMessage(from, messageText) {
         logger.logError(error, { 
             context: 'processAIMessage',
             user: from.replace('@s.whatsapp.net', ''),
-            message: messageText
+            message: messageText,
+            source_type: sourceType
         });
         
         await sock.sendMessage(from, { 
@@ -779,7 +1030,7 @@ app.get('/', (req, res) => {
                         
                         <h1>🤖 IA WhatsApp Bot</h1>
                         <div class="subtitle">
-                            Assistente Inteligente desenvolvido pelo <strong>Grupo Idugel</strong><br>
+                            Assistente Inteligente <strong>MULTIMODAL</strong> desenvolvido pelo <strong>Grupo Idugel</strong><br>
                             Tecnologia avançada de IA para atendimento automatizado
                         </div>
                         
@@ -800,16 +1051,18 @@ app.get('/', (req, res) => {
                         </div>
                         
                         <div class="tech-info">
-                            <div class="tech-title">🔧 Tecnologia Grupo Idugel</div>
+                            <div class="tech-title">🔧 Tecnologia Grupo Idugel - MULTIMODAL</div>
                             <ul class="tech-features">
                                 <li><strong>IA Avançada:</strong> Processamento inteligente de linguagem natural</li>
+                                <li><strong>GPT-4 Vision:</strong> Análise inteligente de imagens e fotos</li>
+                                <li><strong>Whisper AI:</strong> Transcrição precisa de áudios para texto</li>
                                 <li><strong>Integração OpenAI:</strong> Powered by GPT-4 para respostas precisas</li>
                                 <li><strong>Arquitetura Robusta:</strong> Sistema ultra-confiável e escalável</li>
                                 <li><strong>Segurança:</strong> Validação rigorosa e proteção de dados</li>
                                 <li><strong>Disponibilidade 24/7:</strong> Atendimento automatizado contínuo</li>
                                 <li><strong>Multi-thread:</strong> Gerenciamento inteligente de conversas</li>
                                 <li><strong>Filtro Inteligente:</strong> Respostas limpas sem citações desnecessárias</li>
-                                <li><strong>Sistema de Logs:</strong> Monitoramento completo de conversas</li>
+                                <li><strong>Sistema de Logs:</strong> Monitoramento completo de conversas e mídia</li>
                             </ul>
                         </div>
                         
@@ -819,7 +1072,8 @@ app.get('/', (req, res) => {
                         </div>
                         
                         <div class="refresh-note">
-                            💡 <strong>Dica:</strong> Esta página atualiza automaticamente a cada 30 segundos
+                            💡 <strong>Dica:</strong> Esta página atualiza automaticamente a cada 30 segundos<br>
+                            🎯 <strong>Novo:</strong> Agora o bot processa texto, imagens e áudios!
                         </div>
                         
                         <div class="footer">
@@ -972,7 +1226,7 @@ app.get('/', (req, res) => {
                     
                     <h1>🤖 IA WhatsApp Bot</h1>
                     <div class="subtitle">
-                        Assistente Inteligente desenvolvido pelo <strong>Grupo Idugel</strong><br>
+                        Assistente Inteligente <strong>MULTIMODAL</strong> desenvolvido pelo <strong>Grupo Idugel</strong><br>
                         Tecnologia avançada de IA para atendimento automatizado
                     </div>
                     
@@ -984,7 +1238,8 @@ app.get('/', (req, res) => {
                     
                     <p style="color: #7f8c8d; margin: 20px 0;">
                         <em>Aguarde enquanto o sistema inicializa...</em><br>
-                        A página será atualizada automaticamente
+                        A página será atualizada automaticamente<br>
+                        <strong>🎯 Novo: Processamento de texto, imagens e áudios!</strong>
                     </p>
                     
                     <div class="footer">
