@@ -1,79 +1,61 @@
-# IAIDUGEL WhatsApp Bot
 
-Bot de WhatsApp integrado com OpenAI para IAIDUGEL, permitindo interações inteligentes com clientes através do WhatsApp.
+# 🤖 Bot WhatsApp com Assistant da OpenAI - Grupo Idugel
 
-## Funcionalidades
+Este projeto integra o WhatsApp via Baileys com o modelo GPT-4 da OpenAI utilizando a API de Assistants, permitindo interações inteligentes com contexto por número de telefone.
 
-- Integração com a API da OpenAI para respostas inteligentes
-- Gerenciamento de conteúdo personalizado para respostas contextualizadas
-- Comandos especiais para gerenciamento da conversa
-- Interface web simples para monitoramento do status do bot
+---
 
-## Requisitos
+## 🚀 Funcionalidades
 
-- Node.js 16 ou superior
-- Conta no WhatsApp
-- Chave de API da OpenAI
+- 🤖 Integração com Assistant ID personalizado (via Playground da OpenAI)
+- 🧠 Memória de contexto por cliente usando `threadMap.json`
+- 🔐 Suporte a múltiplos contatos simultâneos
+- 🧰 Deploy automatizado compatível com Railway
 
-## Instalação
+---
 
-1. Clone este repositório
-2. Instale as dependências:
-   ```
-   npm install
-   ```
-3. Configure as variáveis de ambiente no arquivo `.env`:
-   ```
-   OPENAI_API_KEY=sua_chave_api_aqui
-   OPENAI_MODEL=gpt-3.5-turbo
-   BOT_NAME=Assistente IA Idugel
-   ```
-4. Inicie o bot:
-   ```
-   npm start
-   ```
-5. Escaneie o código QR com seu WhatsApp para conectar o bot
+## ⚙️ Como configurar
 
-## Comandos Disponíveis
+1. **Crie um `.env` com suas variáveis:**
 
-- `/ajuda` ou `/help` - Exibe a mensagem de ajuda
-- `/limpar` ou `/clear` - Limpa o histórico da conversa
-- `/status` - Verifica o status do sistema
-
-## Estrutura do Projeto
-
-- `src/index.js` - Arquivo principal que inicializa o cliente WhatsApp e o servidor Express
-- `src/messageHandler.js` - Gerencia o processamento de mensagens e interação com a API da OpenAI
-- `src/contentManager.js` - Gerencia o conteúdo personalizado para respostas contextualizadas
-- `config/` - Armazena os dados da sessão do WhatsApp
-- `data/content/` - Armazena o conteúdo personalizado para o bot
-
-## Personalização de Conteúdo
-
-Você pode adicionar conteúdo personalizado para o bot responder perguntas específicas. Basta adicionar arquivos de texto, PDF ou JSON no diretório `data/content/`.
-
-### Formato JSON recomendado:
-
-```json
-[
-  {
-    "text": "Informação sobre produto X: O produto X é ideal para...",
-    "metadata": {
-      "categoria": "produtos",
-      "prioridade": "alta"
-    }
-  },
-  {
-    "text": "Política de devolução: Nossa política permite devoluções em até 7 dias...",
-    "metadata": {
-      "categoria": "políticas",
-      "prioridade": "média"
-    }
-  }
-]
+```
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+OPENAI_ASSISTANT_ID=asst_xxxxxxxxxxxxxxxxxxxxxx
+PORT=3000
+SESSION_DATA_PATH=./config/session
 ```
 
-## Licença
+2. **Adicione ao `.gitignore`:**
 
-MIT
+```
+threadMap.json
+```
 
+3. **Deploy no Railway:**
+
+- Faça push do projeto para o GitHub.
+- Conecte o repositório ao Railway.
+- Configure as variáveis de ambiente no painel do Railway.
+- Pronto! Acesse a URL pública para ver o QR Code e escanear.
+
+---
+
+## 📁 Arquivo `threadMap.json`
+
+Este arquivo armazena os `thread_id` por número de telefone. Ele é criado e mantido automaticamente, mas **não deve ser versionado**.
+
+---
+
+## 📞 Exemplo de uso
+
+- Envie "Oi" pelo WhatsApp.
+- O assistente responde usando seu contexto configurado no Playground.
+- Todo o histórico da conversa é preservado por número.
+
+---
+
+## 🛠️ Créditos
+
+- [Baileys (WhatsApp Web API)](https://github.com/WhiskeySockets/Baileys)
+- [OpenAI Node SDK](https://www.npmjs.com/package/openai)
+- Desenvolvido e adaptado para o Grupo Idugel ✨

@@ -1,0 +1,7 @@
+
+# Ignorar arquivos sensíveis ou gerados automaticamente
+.env
+node_modules/
+config/session/
+threadMap.json
+.DS_Store
