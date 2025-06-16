@@ -11,7 +11,7 @@ const { OpenAI } = require('openai');
 const fs = require('fs');
 const path = require('path');
 
-// ===== VERSÃO MULTIMODAL - ÁUDIO + IMAGENS + TEXTO =====
+// ===== VERSÃO MULTIMODAL COM FORMATAÇÃO INTELIGENTE =====
 
 const THREADS_FILE = './threadMap.json';
 const LOG_FILE = './idugel-conversations.log';
@@ -49,7 +49,8 @@ class ConversationLogger {
             'ERROR': '\x1b[31m',        // Red
             'SUCCESS': '\x1b[32m',      // Green
             'INFO': '\x1b[34m',         // Blue
-            'MEDIA': '\x1b[35m'         // Magenta
+            'MEDIA': '\x1b[35m',        // Magenta
+            'FORMAT': '\x1b[96m'        // Bright Cyan
         };
         
         const color = colors[type] || '\x1b[0m';
@@ -77,6 +78,13 @@ class ConversationLogger {
             processing_time_ms: processingTime,
             processing_time_readable: `${(processingTime / 1000).toFixed(2)}s`,
             media_type: mediaType
+        });
+    }
+
+    logFormat(action, details = {}) {
+        this.log('FORMAT', {
+            action,
+            ...details
         });
     }
 
@@ -130,12 +138,14 @@ class ConversationLogger {
             const errors = (logContent.match(/\[ERROR\]/g) || []).length;
             const threads = (logContent.match(/\[THREAD\]/g) || []).length;
             const media = (logContent.match(/\[MEDIA\]/g) || []).length;
+            const formatting = (logContent.match(/\[FORMAT\]/g) || []).length;
             
             return {
                 total_conversations: conversations,
                 total_errors: errors,
                 total_thread_operations: threads,
                 total_media_processed: media,
+                total_formatting_operations: formatting,
                 log_file_size: `${(fs.statSync(LOG_FILE).size / 1024).toFixed(2)} KB`,
                 last_updated: new Date().toISOString()
             };
@@ -180,6 +190,69 @@ function removeCitations(text) {
     // 8. NÃO remove URLs válidos - eles devem permanecer funcionais
     
     return cleanText.trim();
+}
+
+// NOVA FUNÇÃO: Formatação inteligente para WhatsApp
+function formatForWhatsApp(text) {
+    if (!text || typeof text !== 'string') {
+        return text;
+    }
+
+    logger.logFormat('FORMATTING_START', {
+        original_length: text.length,
+        original_preview: text.substring(0, 100) + '...'
+    });
+
+    let formatted = text;
+
+    // 1. Quebra parágrafos longos em blocos menores
+    formatted = formatted.replace(/([.!?])\s+([A-ZÁÊÇÕ])/g, '$1\n\n$2');
+
+    // 2. Adiciona quebras após dois pontos seguidos de explicação
+    formatted = formatted.replace(/:\s+([A-ZÁÊÇÕ])/g, ':\n\n$1');
+
+    // 3. Quebra listas ou enumerações
+    formatted = formatted.replace(/\s*-\s+/g, '\n\n• ');
+    formatted = formatted.replace(/\s*\*\s+/g, '\n\n• ');
+
+    // 4. Quebra após números seguidos de ponto (listas numeradas)
+    formatted = formatted.replace(/(\d+\.)\s+([A-ZÁÊÇÕ])/g, '\n\n$1 $2');
+
+    // 5. Adiciona espaçamento antes de informações de contato
+    formatted = formatted.replace(/(e-mail|email|WhatsApp|telefone|contato)/gi, '\n\n$1');
+
+    // 6. Quebra antes de URLs para destacá-las
+    formatted = formatted.replace(/(https?:\/\/[^\s]+)/g, '\n\n$1\n\n');
+
+    // 7. Quebra antes de números de telefone
+    formatted = formatted.replace(/(\+55\d{11})/g, '\n\n$1\n\n');
+
+    // 8. Adiciona espaçamento antes de perguntas
+    formatted = formatted.replace(/([.!?])\s+(Como|Posso|Precisa|Deseja|Quer)/g, '$1\n\n$2');
+
+    // 9. Quebra antes de frases de encerramento
+    formatted = formatted.replace(/(Se precisar|Caso|Estamos|Qualquer)/g, '\n\n$1');
+
+    // 10. Remove múltiplas quebras de linha consecutivas (máximo 2)
+    formatted = formatted.replace(/\n{3,}/g, '\n\n');
+
+    // 11. Remove espaços no início e fim de linhas
+    formatted = formatted.split('\n').map(line => line.trim()).join('\n');
+
+    // 12. Remove quebras de linha no início e fim
+    formatted = formatted.trim();
+
+    // 13. Garante que não há mais de 2 quebras consecutivas
+    formatted = formatted.replace(/\n{3,}/g, '\n\n');
+
+    logger.logFormat('FORMATTING_COMPLETE', {
+        original_length: text.length,
+        formatted_length: formatted.length,
+        lines_added: (formatted.match(/\n/g) || []).length - (text.match(/\n/g) || []).length,
+        improvement: 'Texto formatado para melhor legibilidade no WhatsApp'
+    });
+
+    return formatted;
 }
 
 // Função para garantir que SEMPRE seja string
@@ -503,11 +576,11 @@ async function connectToWhatsApp() {
                 const messageText = message.message.conversation || message.message.extendedTextMessage?.text || '';
                 
                 if (messageText.toLowerCase() === 'oi' || messageText.toLowerCase() === 'hello') {
-                    const response = 'Olá! Eu sou a IA do Grupo Idugel. Como posso ajudá-lo?\n\n🎯 *Funcionalidades:*\n📝 Respondo perguntas em texto\n🖼️ Analiso imagens que você enviar\n🎵 Transcrevo áudios para texto\n\nEnvie sua pergunta, foto ou áudio!';
+                    const response = 'Olá! Sou a A.Idugel, assistente virtual do Grupo Idugel.\n\nComo posso ajudá-lo?\n\n🎯 *Funcionalidades:*\n\n📝 Respondo perguntas em texto\n🖼️ Analiso imagens que você enviar\n🎵 Transcrevo áudios para texto\n\nEnvie sua pergunta, foto ou áudio!';
                     await sock.sendMessage(from, { text: response });
                     logger.logConversation(from, messageText, response, 'greeting', 0);
                 } else if (messageText.toLowerCase().includes('teste')) {
-                    const response = '✅ IA Idugel funcionando!\n\n🚀 *Recursos Ativos:*\n📝 Processamento de texto\n🖼️ Análise de imagens (GPT-4 Vision)\n🎵 Transcrição de áudio (Whisper)\n🧠 Sistema de memória por usuário';
+                    const response = '✅ A.Idugel funcionando perfeitamente!\n\n🚀 *Recursos Ativos:*\n\n📝 Processamento de texto\n🖼️ Análise de imagens (GPT-4 Vision)\n🎵 Transcrição de áudio (Whisper)\n🧠 Sistema de memória por usuário\n📱 Formatação inteligente para WhatsApp';
                     await sock.sendMessage(from, { text: response });
                     logger.logConversation(from, messageText, response, 'test', 0);
                 } else if (messageText.trim()) {
@@ -522,7 +595,7 @@ async function connectToWhatsApp() {
             } else {
                 // Tipo de mensagem não suportado
                 await sock.sendMessage(from, { 
-                    text: '🤖 Desculpe, ainda não consigo processar este tipo de mídia.\n\n✅ *Tipos suportados:*\n📝 Texto\n🖼️ Imagens (JPG, PNG)\n🎵 Áudios\n\nEnvie um desses tipos para eu poder ajudar!' 
+                    text: '🤖 Desculpe, ainda não consigo processar este tipo de mídia.\n\n✅ *Tipos suportados:*\n\n📝 Texto\n🖼️ Imagens (JPG, PNG)\n🎵 Áudios\n\nEnvie um desses tipos para eu poder ajudar!' 
                 });
             }
         } catch (error) {
@@ -573,7 +646,7 @@ async function processMediaMessage(message, from, mediaType) {
                 await processAIMessage(from, transcription, 'audio');
                 return; // Sair aqui pois processAIMessage já enviará a resposta
             } else {
-                processedContent = '🎵 Recebi seu áudio, mas não consegui transcrever o conteúdo. Pode tentar enviar novamente?';
+                processedContent = '🎵 Recebi seu áudio, mas não consegui transcrever o conteúdo.\n\nPode tentar enviar novamente?';
             }
             
             logger.logMedia('PROCESS_AUDIO', from, 'audio', {
@@ -582,8 +655,9 @@ async function processMediaMessage(message, from, mediaType) {
             });
         }
         
-        // Enviar resposta
+        // Aplicar formatação inteligente
         if (processedContent) {
+            processedContent = formatForWhatsApp(processedContent);
             await sock.sendMessage(from, { text: processedContent });
             
             const processingTime = Date.now() - startTime;
@@ -598,7 +672,7 @@ async function processMediaMessage(message, from, mediaType) {
         });
         
         await sock.sendMessage(from, { 
-            text: `❌ Desculpe, ocorreu um erro ao processar ${mediaType === 'image' ? 'sua imagem' : 'seu áudio'}. Tente novamente.` 
+            text: `❌ Desculpe, ocorreu um erro ao processar ${mediaType === 'image' ? 'sua imagem' : 'seu áudio'}.\n\nTente novamente.` 
         });
     } finally {
         // Limpar arquivo temporário
@@ -685,7 +759,7 @@ async function listMessages(threadId) {
     return await openai.beta.threads.messages.list(cleanThreadId);
 }
 
-// Função principal de processamento (atualizada para suportar diferentes tipos)
+// Função principal de processamento (atualizada com formatação)
 async function processAIMessage(from, messageText, sourceType = 'text') {
     const startTime = Date.now();
     
@@ -758,7 +832,11 @@ async function processAIMessage(from, messageText, sourceType = 'text') {
                 responsePrefix = '🎵 *Transcrição do áudio:* "' + messageText + '"\n\n';
             }
             
-            const finalResponse = responsePrefix + result;
+            let finalResponse = responsePrefix + result;
+            
+            // APLICAR FORMATAÇÃO INTELIGENTE
+            finalResponse = formatForWhatsApp(finalResponse);
+            
             await sock.sendMessage(from, { text: finalResponse });
             
             const processingTime = Date.now() - startTime;
@@ -766,7 +844,8 @@ async function processAIMessage(from, messageText, sourceType = 'text') {
             logger.logSuccess('Resposta enviada com sucesso', {
                 user: from.replace('@s.whatsapp.net', ''),
                 processing_time: `${(processingTime / 1000).toFixed(2)}s`,
-                source_type: sourceType
+                source_type: sourceType,
+                formatted: true
             });
         } else {
             throw new Error('Timeout: Run não completou no tempo esperado');
@@ -782,7 +861,7 @@ async function processAIMessage(from, messageText, sourceType = 'text') {
         });
         
         await sock.sendMessage(from, { 
-            text: 'Desculpe, estou com dificuldades técnicas.\nErro: ' + error.message + '\n\nTente novamente em alguns segundos.' 
+            text: 'Desculpe, estou com dificuldades técnicas.\n\nErro: ' + error.message + '\n\nTente novamente em alguns segundos.' 
         });
     }
 }
@@ -812,7 +891,7 @@ app.get('/', (req, res) => {
                 <head>
                     <meta charset="UTF-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>IA WhatsApp Bot - Grupo Idugel</title>
+                    <title>A.Idugel - IA WhatsApp Bot</title>
                     <style>
                         * {
                             margin: 0;
@@ -1020,6 +1099,15 @@ app.get('/', (req, res) => {
                             50% { transform: scale(1.05); }
                             100% { transform: scale(1); }
                         }
+                        
+                        .new-feature {
+                            background: linear-gradient(45deg, #e74c3c, #c0392b);
+                            color: white;
+                            padding: 15px;
+                            border-radius: 10px;
+                            margin: 20px 0;
+                            border-left: 4px solid #fff;
+                        }
                     </style>
                 </head>
                 <body>
@@ -1028,14 +1116,19 @@ app.get('/', (req, res) => {
                             <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" onerror="this.style.display='none'; this.parentNode.innerHTML='<div style=\\'background: linear-gradient(45deg, #667eea, #764ba2); width: 100%; height: 100%; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 48px; font-weight: bold; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);\\'>IG</div>';" />
                         </div>
                         
-                        <h1>🤖 IA WhatsApp Bot</h1>
+                        <h1>🤖 A.Idugel</h1>
                         <div class="subtitle">
-                            Assistente Inteligente <strong>MULTIMODAL</strong> desenvolvido pelo <strong>Grupo Idugel</strong><br>
-                            Tecnologia avançada de IA para atendimento automatizado
+                            Assistente Inteligente <strong>MULTIMODAL</strong> com <strong>FORMATAÇÃO INTELIGENTE</strong><br>
+                            Desenvolvido pelo <strong>Grupo Idugel</strong> - Tecnologia avançada de IA
                         </div>
                         
                         <div class="status">
                             📡 Status: ${connectionStatus}
+                        </div>
+                        
+                        <div class="new-feature">
+                            🆕 <strong>NOVA FUNCIONALIDADE:</strong> Formatação inteligente para WhatsApp!<br>
+                            Agora as respostas são organizadas em blocos legíveis com espaçamento adequado.
                         </div>
                         
                         <div class="qr-section">
@@ -1051,18 +1144,19 @@ app.get('/', (req, res) => {
                         </div>
                         
                         <div class="tech-info">
-                            <div class="tech-title">🔧 Tecnologia Grupo Idugel - MULTIMODAL</div>
+                            <div class="tech-title">🔧 A.Idugel - Tecnologia Multimodal Avançada</div>
                             <ul class="tech-features">
                                 <li><strong>IA Avançada:</strong> Processamento inteligente de linguagem natural</li>
                                 <li><strong>GPT-4 Vision:</strong> Análise inteligente de imagens e fotos</li>
                                 <li><strong>Whisper AI:</strong> Transcrição precisa de áudios para texto</li>
+                                <li><strong>Formatação Inteligente:</strong> Respostas organizadas para WhatsApp</li>
                                 <li><strong>Integração OpenAI:</strong> Powered by GPT-4 para respostas precisas</li>
                                 <li><strong>Arquitetura Robusta:</strong> Sistema ultra-confiável e escalável</li>
                                 <li><strong>Segurança:</strong> Validação rigorosa e proteção de dados</li>
                                 <li><strong>Disponibilidade 24/7:</strong> Atendimento automatizado contínuo</li>
                                 <li><strong>Multi-thread:</strong> Gerenciamento inteligente de conversas</li>
-                                <li><strong>Filtro Inteligente:</strong> Respostas limpas sem citações desnecessárias</li>
-                                <li><strong>Sistema de Logs:</strong> Monitoramento completo de conversas e mídia</li>
+                                <li><strong>Filtro Inteligente:</strong> Respostas limpas sem citações</li>
+                                <li><strong>Sistema de Logs:</strong> Monitoramento completo de conversas</li>
                             </ul>
                         </div>
                         
@@ -1073,7 +1167,7 @@ app.get('/', (req, res) => {
                         
                         <div class="refresh-note">
                             💡 <strong>Dica:</strong> Esta página atualiza automaticamente a cada 30 segundos<br>
-                            🎯 <strong>Novo:</strong> Agora o bot processa texto, imagens e áudios!
+                            🎯 <strong>Novo:</strong> Formatação inteligente para melhor legibilidade!
                         </div>
                         
                         <div class="footer">
@@ -1109,7 +1203,7 @@ app.get('/', (req, res) => {
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>IA WhatsApp Bot - Grupo Idugel</title>
+                <title>A.Idugel - IA WhatsApp Bot</title>
                 <style>
                     * {
                         margin: 0;
@@ -1224,10 +1318,10 @@ app.get('/', (req, res) => {
                         <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" onerror="this.style.display='none'; this.parentNode.innerHTML='<div style=\\'background: linear-gradient(45deg, #667eea, #764ba2); width: 100%; height: 100%; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 48px; font-weight: bold; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);\\'>IG</div>';" />
                     </div>
                     
-                    <h1>🤖 IA WhatsApp Bot</h1>
+                    <h1>🤖 A.Idugel</h1>
                     <div class="subtitle">
-                        Assistente Inteligente <strong>MULTIMODAL</strong> desenvolvido pelo <strong>Grupo Idugel</strong><br>
-                        Tecnologia avançada de IA para atendimento automatizado
+                        Assistente Inteligente <strong>MULTIMODAL</strong> com <strong>FORMATAÇÃO INTELIGENTE</strong><br>
+                        Desenvolvido pelo <strong>Grupo Idugel</strong> - Tecnologia avançada de IA
                     </div>
                     
                     <div class="status">
@@ -1239,7 +1333,7 @@ app.get('/', (req, res) => {
                     <p style="color: #7f8c8d; margin: 20px 0;">
                         <em>Aguarde enquanto o sistema inicializa...</em><br>
                         A página será atualizada automaticamente<br>
-                        <strong>🎯 Novo: Processamento de texto, imagens e áudios!</strong>
+                        <strong>🎯 Novo: Formatação inteligente para WhatsApp!</strong>
                     </p>
                     
                     <div class="footer">
