@@ -244,10 +244,11 @@ function ensureStringThreadId(threadId) {
     return cleanId;
 }
 
-// Gerenciador de Threads
+// Gerenciador de Threads com controle de primeira interação
 class ThreadManager {
     constructor() {
         this.threads = this.loadThreads();
+        this.firstInteractions = new Set(); // Rastreia primeiras interações
     }
 
     loadThreads() {
@@ -305,8 +306,24 @@ class ThreadManager {
 
     removeThread(from) {
         delete this.threads[from];
+        this.firstInteractions.delete(from); // Remove também do controle de primeira interação
         this.saveThreads();
         logger.logThread('Thread removida', from, null);
+    }
+
+    // Controle de primeira interação
+    isFirstInteraction(from) {
+        const hasThread = this.getThreadId(from) !== null;
+        const isFirst = !hasThread;
+        
+        if (isFirst) {
+            this.firstInteractions.add(from);
+            logger.logThread('🆕 PRIMEIRA INTERAÇÃO DETECTADA', from, null, { is_first: true });
+        } else {
+            logger.logThread('🔄 INTERAÇÃO CONTINUADA', from, this.getThreadId(from), { is_first: false });
+        }
+        
+        return isFirst;
     }
 }
 
@@ -536,8 +553,12 @@ async function processAIMessage(from, messageText, mediaType = 'text') {
     const startTime = Date.now();
     
     try {
+        // Verifica se é primeira interação
+        const isFirstInteraction = threadManager.isFirstInteraction(from);
+        
         logger.logConversation('📩 MENSAGEM RECEBIDA', from, messageText, '', '', {
-            mediaType
+            mediaType,
+            isFirstInteraction
         });
 
         let threadId = threadManager.getThreadId(from);
@@ -548,7 +569,26 @@ async function processAIMessage(from, messageText, mediaType = 'text') {
             logger.logThread('🧵 Thread criada com ID', from, threadId);
         }
 
-        await addMessageToThread(threadId, messageText);
+        // Adiciona contexto para conversas continuadas
+        let contextualMessage = messageText;
+        
+        if (!isFirstInteraction) {
+            // Para interações subsequentes, adiciona instrução para não se apresentar
+            contextualMessage = `[CONTEXTO: Esta é uma conversa continuada com este usuário. NÃO se apresente novamente como "A.Idugel" pois já nos conhecemos. Responda diretamente à pergunta.]\n\n${messageText}`;
+            
+            logger.logInfo('🔄 ADICIONADO CONTEXTO DE CONVERSA CONTINUADA', {
+                from: from.replace('@s.whatsapp.net', ''),
+                original_message: messageText.substring(0, 50),
+                contextual_message: contextualMessage.substring(0, 100)
+            });
+        } else {
+            logger.logInfo('🆕 PRIMEIRA INTERAÇÃO - APRESENTAÇÃO PERMITIDA', {
+                from: from.replace('@s.whatsapp.net', ''),
+                message: messageText.substring(0, 50)
+            });
+        }
+
+        await addMessageToThread(threadId, contextualMessage);
         const run = await createRun(threadId);
         
         // Aguarda conclusão do run com logs detalhados
@@ -645,17 +685,16 @@ app.get('/', (req, res) => {
                 * {
                     margin: 0;
                     padding: 0;
-                    box-sizing: border-box;
-                }
-
                 body {
+                    margin: 0;
+                    padding: 0;
                     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                     min-height: 100vh;
                     display: flex;
-                    align-items: center;
                     justify-content: center;
-                    color: #333;
+                    align-items: center;
+                }   color: #333;
                     padding: 20px;
                 }
 
@@ -691,14 +730,15 @@ app.get('/', (req, res) => {
                 h1 {
                     font-size: 2.2em;
                     margin: 10px 0;
-                    color: #2c3e50;
+                    color: white;
                     font-weight: 700;
+                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
                 }
 
                 .subtitle {
                     font-size: 1.1em;
                     margin-bottom: 30px;
-                    color: #7f8c8d;
+                    color: rgba(255, 255, 255, 0.9);
                     line-height: 1.6;
                 }
 
@@ -1065,7 +1105,7 @@ async function startWhatsApp() {
                             // Enviar análise da imagem para o assistente processar
                             logger.logMedia('🤖 ENVIANDO ANÁLISE PARA ASSISTENTE', from, 'image');
                             const imageAnalysisText = processedContent.replace('🖼️ *Análise da imagem:*\n\n', '');
-                            const aiResponse = await processAIMessage(from, `Análise da imagem: ${imageAnalysisText}`, 'image');
+                            const aiResponse = await processAIMessage(from, `Baseado na análise da imagem: ${imageAnalysisText}. Forneça uma resposta útil e contextualizada sobre o que foi identificado.`, 'image');
                             
                             processedContent = aiResponse;
                             stats.media_processed++;
