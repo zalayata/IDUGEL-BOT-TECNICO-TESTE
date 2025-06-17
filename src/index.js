@@ -687,27 +687,23 @@ app.get('/', (req, res) => {
                     padding: 0;
                 body {
                     margin: 0;
-                    padding: 0;
+                    padding: 20px;
                     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
                     min-height: 100vh;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
+                    color: #333;
                 }   color: #333;
                     padding: 20px;
                 }
 
                 .container {
-                    background: rgba(255, 255, 255, 0.95);
-                    backdrop-filter: blur(10px);
+                    background: white;
                     border-radius: 20px;
                     padding: 40px;
-                    max-width: 600px;
-                    width: 90%;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
                     text-align: center;
-                    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    max-width: 600px;
+                    margin: 0 auto;
                 }
 
                 .logo {
@@ -730,15 +726,14 @@ app.get('/', (req, res) => {
                 h1 {
                     font-size: 2.2em;
                     margin: 10px 0;
-                    color: white;
+                    color: #2c3e50;
                     font-weight: 700;
-                    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
                 }
 
                 .subtitle {
                     font-size: 1.1em;
                     margin-bottom: 30px;
-                    color: rgba(255, 255, 255, 0.9);
+                    color: #7f8c8d;
                     line-height: 1.6;
                 }
 
@@ -990,22 +985,24 @@ async function startWhatsApp() {
                     logger.logSuccess('QR Code gerado', { qr_length: qr.length });
                     
                     // Converter QR Code para base64
-                    const qrCodeDataURL = await QRCode.toDataURL(qr, {
-                        errorCorrectionLevel: 'M',
-                        type: 'image/png',
-                        quality: 0.92,
-                        margin: 1,
-                        color: {
-                            dark: '#000000',
-                            light: '#FFFFFF'
-                        }
+                             const qrCodeDataURL = await QRCode.toDataURL(qr, {
+                    errorCorrectionLevel: 'M',
+                    type: 'image/png',
+                    quality: 0.92,
+                    margin: 2,
+                    width: 400,
+                    color: {
+                        dark: '#000000',
+                        light: '#FFFFFF'
+                    }
+                });  }
                     });
                     
                     global.qrCode = `
                         <div style="text-align: center;">
                             <h3 style="color: #333; margin-bottom: 20px;">📱 Escaneie o QR Code</h3>
-                            <div style="background: white; padding: 20px; border-radius: 10px; display: inline-block;">
-                                <img src="${qrCodeDataURL}" style="max-width: 300px; width: 100%;" alt="QR Code" />
+                            <div style="background: white; padding: 20px; border-radius: 10px; display: inline-block; box-shadow: 0 5px 15px rgba(0,0,0,0.1);">
+                                <img src="${qrCodeDataURL}" style="max-width: 400px; width: 100%; height: auto;" alt="QR Code" />
                             </div>
                             <p style="color: #666; margin-top: 15px; font-size: 14px;">
                                 Abra o WhatsApp → Menu → Dispositivos conectados → Conectar dispositivo
