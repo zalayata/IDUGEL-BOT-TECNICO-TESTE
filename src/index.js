@@ -9,6 +9,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const OpenAI = require('openai');
+const QRCode = require('qrcode');
 
 const THREADS_FILE = path.join(__dirname, 'threadMap.json');
 const LOG_FILE = path.join(__dirname, 'idugel-conversations.log');
@@ -639,7 +640,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>A.IDUGEL Bot - WhatsApp Multimodal</title>
+            <title>IAIDUGEL - Tecnologia Grupo Idugel</title>
             <style>
                 * {
                     margin: 0;
@@ -670,13 +671,35 @@ app.get('/', (req, res) => {
                 }
 
                 .logo {
-                    font-size: 3em;
-                    margin-bottom: 20px;
+                    width: 80px;
+                    height: 80px;
+                    margin: 0 auto 20px;
+                    border-radius: 50%;
+                    background: linear-gradient(45deg, #4facfe, #00f2fe);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 2em;
+                    font-weight: bold;
+                    color: white;
+                    box-shadow: 0 4px 15px rgba(79, 172, 254, 0.3);
+                }
+
+                h1 {
+                    font-size: 2.5em;
+                    margin: 10px 0;
                     background: linear-gradient(45deg, #4facfe, #00f2fe);
                     -webkit-background-clip: text;
                     -webkit-text-fill-color: transparent;
                     background-clip: text;
                     font-weight: bold;
+                }
+
+                .subtitle {
+                    font-size: 1.1em;
+                    margin-bottom: 30px;
+                    opacity: 0.9;
+                    color: #e0e0e0;
                 }
 
                 .status {
@@ -824,8 +847,13 @@ app.get('/', (req, res) => {
         </head>
         <body>
             <div class="container">
-                <div class="logo pulse">🤖 A.IDUGEL</div>
-                <h2>Bot WhatsApp Multimodal com IA</h2>
+                <div class="logo">
+                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
+                         onerror="this.style.display='none'; this.parentNode.innerHTML='IG';" />
+                </div>
+                
+                <h1>IAIDUGEL</h1>
+                <div class="subtitle">Tecnologia Grupo Idugel</div>
                 
                 <div class="status">
                     <strong>Status:</strong> ${global.connectionStatus}
@@ -876,7 +904,7 @@ app.get('/', (req, res) => {
                 </div>
                 
                 <div class="footer">
-                    <p>© 2024 A.IDUGEL - Assistente Inteligente</p>
+                    <p>© 2024 IAIDUGEL - Tecnologia Grupo Idugel</p>
                     <p>Desenvolvido com ❤️ para automatizar seu atendimento</p>
                 </div>
             </div>
@@ -904,29 +932,59 @@ async function startWhatsApp() {
 
         sock.ev.on('creds.update', saveCreds);
         
-        sock.ev.on('connection.update', (update) => {
+        sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
-                console.log('🔐 QR Code gerado! Acesse a página web para escanear.');
-                global.qrCode = `
-                    <div style="text-align: center;">
-                        <h3 style="color: #333; margin-bottom: 20px;">📱 Escaneie o QR Code</h3>
-                        <div style="background: white; padding: 20px; border-radius: 10px; display: inline-block;">
-                            <img src="data:image/png;base64,${qr}" style="max-width: 300px; width: 100%;" />
+                try {
+                    console.log('🔐 QR Code gerado! Acesse a página web para escanear.');
+                    logger.logSuccess('QR Code gerado', { qr_length: qr.length });
+                    
+                    // Converter QR Code para base64
+                    const qrCodeDataURL = await QRCode.toDataURL(qr, {
+                        errorCorrectionLevel: 'M',
+                        type: 'image/png',
+                        quality: 0.92,
+                        margin: 1,
+                        color: {
+                            dark: '#000000',
+                            light: '#FFFFFF'
+                        }
+                    });
+                    
+                    global.qrCode = `
+                        <div style="text-align: center;">
+                            <h3 style="color: #333; margin-bottom: 20px;">📱 Escaneie o QR Code</h3>
+                            <div style="background: white; padding: 20px; border-radius: 10px; display: inline-block;">
+                                <img src="${qrCodeDataURL}" style="max-width: 300px; width: 100%;" alt="QR Code" />
+                            </div>
+                            <p style="color: #666; margin-top: 15px; font-size: 14px;">
+                                Abra o WhatsApp → Menu → Dispositivos conectados → Conectar dispositivo
+                            </p>
                         </div>
-                        <p style="color: #666; margin-top: 15px; font-size: 14px;">
-                            Abra o WhatsApp → Menu → Dispositivos conectados → Conectar dispositivo
-                        </p>
-                    </div>
-                `;
-                global.connectionStatus = 'Aguardando escaneamento do QR Code...';
+                    `;
+                    global.connectionStatus = 'Aguardando escaneamento do QR Code...';
+                    
+                    logger.logSuccess('QR Code convertido para base64', { 
+                        dataURL_length: qrCodeDataURL.length 
+                    });
+                    
+                } catch (qrError) {
+                    logger.logError('Erro ao gerar QR Code', qrError);
+                    global.qrCode = `
+                        <div style="color: red; text-align: center;">
+                            <h3>❌ Erro ao gerar QR Code</h3>
+                            <p>Tente recarregar a página</p>
+                        </div>
+                    `;
+                }
             }
             
             if (connection === 'close') {
                 const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
                 console.log('📴 Conexão fechada devido a:', lastDisconnect?.error, ', reconectando:', shouldReconnect);
                 global.connectionStatus = 'Desconectado - Tentando reconectar...';
+                global.qrCode = '<div style="color: orange;">Reconectando...</div>';
                 
                 if (shouldReconnect) {
                     setTimeout(startWhatsApp, 5000);
