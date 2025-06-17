@@ -341,14 +341,14 @@ async function processImage(imagePath, caption = '') {
             `Analise esta imagem. Contexto adicional: ${caption}` :
             "Analise esta imagem e descreva o que você vê de forma detalhada.";
 
-        logger.logMedia('🤖 ENVIANDO PARA GPT-4 VISION', '', 'image', {
+        logger.logMedia('🤖 ENVIANDO PARA GPT-4O', '', 'image', {
             prompt: prompt,
-            model: 'gpt-4-vision-preview',
+            model: 'gpt-4o',
             max_tokens: 500
         });
 
         const response = await openai.chat.completions.create({
-            model: "gpt-4-vision-preview",
+            model: "gpt-4o",
             messages: [
                 {
                     role: "user",
@@ -882,7 +882,7 @@ app.get('/', (req, res) => {
                     <h3>🚀 Recursos Disponíveis:</h3>
                     <ul>
                         <li>💬 Conversas inteligentes com IA</li>
-                        <li>🖼️ Análise de imagens com GPT-4 Vision</li>
+                        <li>🖼️ Análise de imagens com GPT-4o</li>
                         <li>🎵 Transcrição de áudios com Whisper</li>
                         <li>📱 Interface web responsiva</li>
                         <li>📊 Logs detalhados em tempo real</li>
