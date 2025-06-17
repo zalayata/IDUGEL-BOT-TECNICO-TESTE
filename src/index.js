@@ -907,7 +907,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>IAIDUGEL - Tecnologia Grupo Idugel</title>
+        <title>A.IDUGEL - Tecnologia Grupo Idugel</title>
         <style>
             * {
                 margin: 0;
@@ -1134,7 +1134,7 @@ app.get('/', (req, res) => {
         <div class="container">
             <div class="header">
                 <div class="logo">
-                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
+                    <img src="/public/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
                          onerror="this.style.display='none'; this.parentNode.innerHTML='IG';" />
                 </div>
                 <h1>IAIDUGEL</h1>
