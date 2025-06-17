@@ -1061,6 +1061,13 @@ async function startWhatsApp() {
                             });
                             
                             processedContent = await processImage(imagePath, caption);
+                            
+                            // Enviar análise da imagem para o assistente processar
+                            logger.logMedia('🤖 ENVIANDO ANÁLISE PARA ASSISTENTE', from, 'image');
+                            const imageAnalysisText = processedContent.replace('🖼️ *Análise da imagem:*\n\n', '');
+                            const aiResponse = await processAIMessage(from, `Análise da imagem: ${imageAnalysisText}`, 'image');
+                            
+                            processedContent = aiResponse;
                             stats.media_processed++;
                             
                             logger.logMedia('🎯 PROCESSAMENTO DE IMAGEM FINALIZADO', from, 'image', {
