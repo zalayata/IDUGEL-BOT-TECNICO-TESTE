@@ -650,30 +650,31 @@ app.get('/', (req, res) => {
 
                 body {
                     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
                     min-height: 100vh;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    color: white;
+                    color: #333;
+                    padding: 20px;
                 }
 
                 .container {
-                    background: rgba(255, 255, 255, 0.1);
+                    background: rgba(255, 255, 255, 0.95);
                     backdrop-filter: blur(10px);
                     border-radius: 20px;
                     padding: 40px;
                     max-width: 600px;
                     width: 90%;
                     text-align: center;
-                    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+                    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
                     border: 1px solid rgba(255, 255, 255, 0.18);
                 }
 
                 .logo {
-                    width: 80px;
-                    height: 80px;
-                    margin: 0 auto 20px;
+                    width: 120px;
+                    height: 120px;
+                    margin: 0 auto 30px;
                     border-radius: 50%;
                     background: linear-gradient(45deg, #4facfe, #00f2fe);
                     display: flex;
@@ -682,44 +683,47 @@ app.get('/', (req, res) => {
                     font-size: 2em;
                     font-weight: bold;
                     color: white;
-                    box-shadow: 0 4px 15px rgba(79, 172, 254, 0.3);
+                    box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3);
+                    border: 4px solid white;
+                    overflow: hidden;
                 }
 
                 h1 {
-                    font-size: 2.5em;
+                    font-size: 2.2em;
                     margin: 10px 0;
-                    background: linear-gradient(45deg, #4facfe, #00f2fe);
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                    background-clip: text;
-                    font-weight: bold;
+                    color: #2c3e50;
+                    font-weight: 700;
                 }
 
                 .subtitle {
                     font-size: 1.1em;
                     margin-bottom: 30px;
-                    opacity: 0.9;
-                    color: #e0e0e0;
+                    color: #7f8c8d;
+                    line-height: 1.6;
                 }
 
                 .status {
-                    font-size: 1.2em;
+                    background: linear-gradient(45deg, #27ae60, #2ecc71);
+                    color: white;
+                    padding: 15px 25px;
+                    border-radius: 50px;
                     margin: 20px 0;
-                    padding: 15px;
-                    border-radius: 10px;
-                    background: rgba(255, 255, 255, 0.1);
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    box-shadow: 0 5px 15px rgba(46, 204, 113, 0.3);
                 }
 
                 .qr-container {
-                    margin: 30px 0;
-                    padding: 20px;
-                    background: rgba(255, 255, 255, 0.9);
+                    background: #f8f9fa;
                     border-radius: 15px;
-                    color: #333;
+                    padding: 30px;
+                    margin: 30px 0;
+                    border: 3px dashed #667eea;
                     min-height: 200px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
+                    color: #333;
                 }
 
                 .stats {
@@ -730,22 +734,25 @@ app.get('/', (req, res) => {
                 }
 
                 .stat-card {
-                    background: rgba(255, 255, 255, 0.1);
+                    background: linear-gradient(45deg, #3498db, #2980b9);
+                    color: white;
                     padding: 20px;
                     border-radius: 10px;
                     border: 1px solid rgba(255, 255, 255, 0.2);
+                    box-shadow: 0 5px 15px rgba(52, 152, 219, 0.3);
                 }
 
                 .stat-number {
                     font-size: 2em;
                     font-weight: bold;
-                    color: #4facfe;
+                    color: white;
                 }
 
                 .stat-label {
                     font-size: 0.9em;
-                    opacity: 0.8;
+                    opacity: 0.9;
                     margin-top: 5px;
+                    color: white;
                 }
 
                 .features {
@@ -755,7 +762,8 @@ app.get('/', (req, res) => {
 
                 .features h3 {
                     margin-bottom: 15px;
-                    color: #4facfe;
+                    color: #2c3e50;
+                    text-align: center;
                 }
 
                 .features ul {
@@ -767,26 +775,28 @@ app.get('/', (req, res) => {
                     padding: 8px 0;
                     padding-left: 25px;
                     position: relative;
+                    color: #34495e;
                 }
 
                 .features li:before {
-                    content: "✓";
+                    content: "🚀";
                     position: absolute;
                     left: 0;
                 }
 
                 .instructions {
-                    background: rgba(255, 255, 255, 0.1);
+                    background: #fff3cd;
+                    color: #856404;
                     border-radius: 10px;
                     padding: 20px;
                     margin: 20px 0;
-                    border-left: 4px solid #00f2fe;
+                    border-left: 4px solid #ffc107;
                 }
 
                 .footer {
                     margin-top: 30px;
                     font-size: 14px;
-                    opacity: 0.8;
+                    color: #7f8c8d;
                 }
 
                 .links {
@@ -794,21 +804,21 @@ app.get('/', (req, res) => {
                 }
 
                 .links a {
-                    color: #4facfe;
+                    color: white;
+                    background: linear-gradient(45deg, #667eea, #764ba2);
                     text-decoration: none;
                     margin: 0 10px;
                     padding: 8px 16px;
-                    border: 1px solid #4facfe;
                     border-radius: 20px;
                     transition: all 0.3s ease;
                     display: inline-block;
                     margin-bottom: 10px;
+                    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
                 }
 
                 .links a:hover {
-                    background: #4facfe;
-                    color: white;
                     transform: translateY(-2px);
+                    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
                 }
 
                 .pulse {
@@ -846,12 +856,11 @@ app.get('/', (req, res) => {
             </script>
         </head>
         <body>
-            <div class="container">
-                <div class="logo">
-                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
+            <div class="                <div class="logo pulse">
+                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" 
+                         style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
                          onerror="this.style.display='none'; this.parentNode.innerHTML='IG';" />
-                </div>
-                
+                </div>   
                 <h1>IAIDUGEL</h1>
                 <div class="subtitle">Tecnologia Grupo Idugel</div>
                 
