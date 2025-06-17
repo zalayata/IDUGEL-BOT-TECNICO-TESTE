@@ -8,8 +8,8 @@ const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, download
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const { OpenAI } = require('openai');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 
 // ===== VERSÃO MULTIMODAL COM FORMATAÇÃO INTELIGENTE =====
 
@@ -52,12 +52,10 @@ class ConversationLogger {
             'MEDIA': '\x1b[35m',        // Magenta
             'FORMAT': '\x1b[96m'        // Bright Cyan
         };
-        
+
         const color = colors[type] || '\x1b[0m';
         const reset = '\x1b[0m';
-        
-        console.log(`${color}[${type}]${reset} ${timestamp}`);
-        console.log(JSON.stringify(data, null, 2));
+        console.log(`${color}[${type}]${reset} ${JSON.stringify(logEntry, null, 2)}`);
 
         // Log no arquivo
         try {
@@ -68,16 +66,17 @@ class ConversationLogger {
         }
     }
 
-    logConversation(user, question, answer, threadId, processingTime, mediaType = 'text') {
+    logConversation(action, user, question, answer, threadId, details = {}) {
         this.log('CONVERSATION', {
+            action,
             user: user.replace('@s.whatsapp.net', ''),
             question,
             answer: answer.substring(0, 500) + (answer.length > 500 ? '...' : ''),
             answer_length: answer.length,
             thread_id: threadId,
-            processing_time_ms: processingTime,
-            processing_time_readable: `${(processingTime / 1000).toFixed(2)}s`,
-            media_type: mediaType
+            processing_time_ms: details.processingTime,
+            processing_time_readable: `${(details.processingTime / 1000).toFixed(2)}s`,
+            media_type: details.mediaType
         });
     }
 
@@ -106,196 +105,211 @@ class ConversationLogger {
         });
     }
 
-    logError(error, context = {}) {
+    logError(action, error, details = {}) {
         this.log('ERROR', {
+            action,
             message: error.message,
             stack: error.stack,
-            context
+            ...details
         });
     }
 
-    logSuccess(message, details = {}) {
+    logSuccess(action, details = {}) {
         this.log('SUCCESS', {
-            message,
+            action,
             ...details
         });
     }
 
-    logInfo(message, details = {}) {
+    logInfo(action, details = {}) {
         this.log('INFO', {
-            message,
+            action,
             ...details
         });
-    }
-
-    // Método para gerar relatório de estatísticas
-    generateStats() {
-        try {
-            if (!fs.existsSync(LOG_FILE)) return null;
-            
-            const logContent = fs.readFileSync(LOG_FILE, 'utf-8');
-            const conversations = (logContent.match(/\[CONVERSATION\]/g) || []).length;
-            const errors = (logContent.match(/\[ERROR\]/g) || []).length;
-            const threads = (logContent.match(/\[THREAD\]/g) || []).length;
-            const media = (logContent.match(/\[MEDIA\]/g) || []).length;
-            const formatting = (logContent.match(/\[FORMAT\]/g) || []).length;
-            
-            return {
-                total_conversations: conversations,
-                total_errors: errors,
-                total_thread_operations: threads,
-                total_media_processed: media,
-                total_formatting_operations: formatting,
-                log_file_size: `${(fs.statSync(LOG_FILE).size / 1024).toFixed(2)} KB`,
-                last_updated: new Date().toISOString()
-            };
-        } catch (err) {
-            return { error: err.message };
-        }
     }
 }
 
 const logger = new ConversationLogger();
 
-// Função para limpar citações das respostas da IA (VERSÃO CORRIGIDA)
+// Função para limpar citações preservando links
 function removeCitations(text) {
-    if (!text || typeof text !== 'string') {
-        return text;
-    }
+    if (!text) return '';
     
-    let cleanText = text;
-    
-    // 1. Remove citações específicas da OpenAI no formato 【número†source】
-    cleanText = cleanText.replace(/【\d+†source】/g, '');
-    
-    // 2. Remove citações no formato 【número】, 【número:número】, etc.
-    cleanText = cleanText.replace(/【[^】]*】/g, '');
-    
-    // 3. Remove citações no formato [número], [número:número], etc. (mas preserva links markdown)
-    cleanText = cleanText.replace(/\[[0-9]+(?::[0-9]+)?\]/g, '');
-    
-    // 4. Remove citações no formato (número), (número:número), etc.
-    cleanText = cleanText.replace(/\([0-9]+(?::[0-9]+)?\)/g, '');
-    
-    // 5. Converte links markdown para links diretos (preserva funcionalidade)
-    // [texto](https://link.com) → https://link.com
-    cleanText = cleanText.replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2');
-    
-    // 6. Remove linhas que começam com "Sources:" ou "Fontes:"
-    cleanText = cleanText.replace(/^(Sources?|Fontes?):\s*.*$/gmi, '');
-    
-    // 7. Remove múltiplos espaços e quebras de linha (mas preserva estrutura)
-    cleanText = cleanText.replace(/\s+/g, ' ').trim();
-    
-    // 8. NÃO remove URLs válidos - eles devem permanecer funcionais
-    
-    return cleanText.trim();
-}
-
-// NOVA FUNÇÃO: Formatação inteligente para WhatsApp
-function formatForWhatsApp(text) {
-    if (!text || typeof text !== 'string') {
-        return text;
-    }
-
-    logger.logFormat('FORMATTING_START', {
+    logger.logFormat('Iniciando limpeza de citações', { 
         original_length: text.length,
-        original_preview: text.substring(0, 100) + '...'
+        has_citations: /【\d+†source】/.test(text)
+    });
+    
+    let cleanText = text
+        // Remove citações específicas: 【número†source】
+        .replace(/【\d+†source】/g, '')
+        // Remove citações numéricas: 【número】, [número], (número)
+        .replace(/【\d+】/g, '')
+        .replace(/【\d+:\d+】/g, '')
+        .replace(/\[\d+\]/g, '')
+        .replace(/\[\d+:\d+\]/g, '')
+        .replace(/\(\d+\)/g, '')
+        .replace(/\(\d+:\d+\)/g, '')
+        // Converte markdown de links para links diretos: [texto](link) → link
+        .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
+        // Remove linhas "Sources:" ou "Fontes:"
+        .replace(/^(Sources?|Fontes?):\s*$/gim, '')
+        // Remove múltiplos espaços e quebras
+        .replace(/\s+/g, ' ')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .trim();
+
+    logger.logFormat('Citações removidas', { 
+        original_length: text.length,
+        clean_length: cleanText.length,
+        removed_chars: text.length - cleanText.length
     });
 
-    let formatted = text;
+    return cleanText;
+}
 
-    // 1. Quebra parágrafos longos em blocos menores
-    formatted = formatted.replace(/([.!?])\s+([A-ZÁÊÇÕ])/g, '$1\n\n$2');
+// Função para formatação inteligente para WhatsApp
+function formatForWhatsApp(text) {
+    if (!text) return '';
+    
+    logger.logFormat('Iniciando formatação para WhatsApp', { 
+        original_length: text.length 
+    });
+    
+    let formatted = text
+        // Quebra parágrafos longos após pontos finais
+        .replace(/\. ([A-ZÁÊÇÕ])/g, '.\n\n$1')
+        // Adiciona espaçamento após dois pontos seguidos de texto
+        .replace(/: ([A-ZÁÊÇÕ])/g, ':\n\n$1')
+        // Organiza listas com bullets
+        .replace(/^- /gm, '• ')
+        // Quebra antes de URLs para ficarem em linha separada
+        .replace(/([.!?]) (https?:\/\/[^\s]+)/g, '$1\n\n$2')
+        // Quebra antes de emails
+        .replace(/([.!?]) ([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, '$1\n\n$2')
+        // Quebra antes de números de telefone
+        .replace(/([.!?]) (\+\d{2}\d{8,})/g, '$1\n\n$2')
+        // Quebra antes de perguntas para o usuário
+        .replace(/([.!?]) (Como posso|Posso|Gostaria|Deseja|Precisa)/g, '$1\n\n$2')
+        // Espaça frases de encerramento
+        .replace(/(Obrigad[oa]|Atenciosamente|Cordialmente)\./g, '\n\n$1.')
+        // Remove múltiplas quebras de linha (máximo 2)
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 
-    // 2. Adiciona quebras após dois pontos seguidos de explicação
-    formatted = formatted.replace(/:\s+([A-ZÁÊÇÕ])/g, ':\n\n$1');
-
-    // 3. Quebra listas ou enumerações
-    formatted = formatted.replace(/\s*-\s+/g, '\n\n• ');
-    formatted = formatted.replace(/\s*\*\s+/g, '\n\n• ');
-
-    // 4. Quebra após números seguidos de ponto (listas numeradas)
-    formatted = formatted.replace(/(\d+\.)\s+([A-ZÁÊÇÕ])/g, '\n\n$1 $2');
-
-    // 5. Adiciona espaçamento antes de informações de contato
-    formatted = formatted.replace(/(e-mail|email|WhatsApp|telefone|contato)/gi, '\n\n$1');
-
-    // 6. Quebra antes de URLs para destacá-las
-    formatted = formatted.replace(/(https?:\/\/[^\s]+)/g, '\n\n$1\n\n');
-
-    // 7. Quebra antes de números de telefone
-    formatted = formatted.replace(/(\+55\d{11})/g, '\n\n$1\n\n');
-
-    // 8. Adiciona espaçamento antes de perguntas
-    formatted = formatted.replace(/([.!?])\s+(Como|Posso|Precisa|Deseja|Quer)/g, '$1\n\n$2');
-
-    // 9. Quebra antes de frases de encerramento
-    formatted = formatted.replace(/(Se precisar|Caso|Estamos|Qualquer)/g, '\n\n$1');
-
-    // 10. Remove múltiplas quebras de linha consecutivas (máximo 2)
-    formatted = formatted.replace(/\n{3,}/g, '\n\n');
-
-    // 11. Remove espaços no início e fim de linhas
-    formatted = formatted.split('\n').map(line => line.trim()).join('\n');
-
-    // 12. Remove quebras de linha no início e fim
-    formatted = formatted.trim();
-
-    // 13. Garante que não há mais de 2 quebras consecutivas
-    formatted = formatted.replace(/\n{3,}/g, '\n\n');
-
-    logger.logFormat('FORMATTING_COMPLETE', {
+    logger.logFormat('Formatação concluída', { 
         original_length: text.length,
         formatted_length: formatted.length,
-        lines_added: (formatted.match(/\n/g) || []).length - (text.match(/\n/g) || []).length,
-        improvement: 'Texto formatado para melhor legibilidade no WhatsApp'
+        line_breaks_added: (formatted.match(/\n/g) || []).length
     });
 
     return formatted;
 }
 
-// Função para garantir que SEMPRE seja string
-function forceString(input) {
-    if (input === null || input === undefined) {
+// Configuração OpenAI
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Funções auxiliares para validação
+function forceString(value) {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && value.id) return String(value.id);
+    return String(value || '');
+}
+
+function isValidThreadId(threadId) {
+    const cleanId = forceString(threadId);
+    return cleanId && cleanId.startsWith('thread_') && cleanId.length > 10;
+}
+
+function ensureStringThreadId(threadId) {
+    const cleanId = forceString(threadId);
+    if (!isValidThreadId(cleanId)) {
+        throw new Error(`Invalid thread ID: ${cleanId}`);
+    }
+    return cleanId;
+}
+
+// Gerenciador de Threads
+class ThreadManager {
+    constructor() {
+        this.threads = this.loadThreads();
+    }
+
+    loadThreads() {
+        try {
+            if (fs.existsSync(THREADS_FILE)) {
+                const data = fs.readFileSync(THREADS_FILE, 'utf8');
+                const parsed = JSON.parse(data);
+                
+                // Limpa dados corrompidos
+                const cleaned = {};
+                for (const [key, value] of Object.entries(parsed)) {
+                    const cleanValue = forceString(value);
+                    if (isValidThreadId(cleanValue)) {
+                        cleaned[key] = cleanValue;
+                    } else {
+                        logger.logThread('Removendo thread corrompida', key, cleanValue);
+                    }
+                }
+                
+                return cleaned;
+            }
+        } catch (error) {
+            logger.logError('Erro ao carregar threads', error);
+        }
+        return {};
+    }
+
+    saveThreads() {
+        try {
+            fs.writeFileSync(THREADS_FILE, JSON.stringify(this.threads, null, 2));
+        } catch (error) {
+            logger.logError('Erro ao salvar threads', error);
+        }
+    }
+
+    getThreadId(from) {
+        const raw = this.threads[from];
+        logger.logThread('Buscando thread', from, raw, { type: typeof raw });
+        
+        if (typeof raw === 'string' && isValidThreadId(raw)) {
+            return raw;
+        }
+        
+        logger.logThread('Thread não encontrada ou inválida', from, raw);
         return null;
     }
-    
-    // Se já é string, retorna
-    if (typeof input === 'string') {
-        return input.trim();
+
+    setThreadId(from, threadId) {
+        const cleanId = ensureStringThreadId(threadId);
+        this.threads[from] = cleanId;
+        this.saveThreads();
+        logger.logThread('Thread salva', from, cleanId);
+        return cleanId;
     }
-    
-    // Se é objeto com propriedade id
-    if (typeof input === 'object' && input.id) {
-        return String(input.id).trim();
+
+    removeThread(from) {
+        delete this.threads[from];
+        this.saveThreads();
+        logger.logThread('Thread removida', from, null);
     }
-    
-    // Força conversão para string
-    return String(input).trim();
 }
 
-// Função para validar thread ID
-function isValidThreadId(threadId) {
-    if (!threadId || typeof threadId !== 'string') {
-        return false;
-    }
-    return /^thread_[a-zA-Z0-9_-]+$/.test(threadId);
-}
+const threadManager = new ThreadManager();
 
-// Função para processar imagem com GPT-4 Vision
-async function processImageWithVision(imagePath, userMessage = '') {
+// Funções de processamento de mídia
+async function processImage(imagePath, caption = '') {
     try {
-        logger.logInfo('Processando imagem com GPT-4 Vision', { 
-            image_path: imagePath,
-            user_message: userMessage 
+        logger.logMedia('Iniciando processamento de imagem', '', 'image', { 
+            path: imagePath, 
+            caption: caption 
         });
 
-        // Ler a imagem e converter para base64
         const imageBuffer = fs.readFileSync(imagePath);
         const base64Image = imageBuffer.toString('base64');
-        const mimeType = path.extname(imagePath).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
-
+        
         const response = await openai.chat.completions.create({
             model: "gpt-4-vision-preview",
             messages: [
@@ -304,1058 +318,707 @@ async function processImageWithVision(imagePath, userMessage = '') {
                     content: [
                         {
                             type: "text",
-                            text: userMessage || "Analise esta imagem e descreva o que você vê de forma detalhada e útil."
+                            text: caption ? 
+                                `Analise esta imagem. Contexto adicional: ${caption}` : 
+                                "Analise esta imagem e descreva o que você vê de forma detalhada."
                         },
                         {
                             type: "image_url",
                             image_url: {
-                                url: `data:${mimeType};base64,${base64Image}`
+                                url: `data:image/jpeg;base64,${base64Image}`
                             }
                         }
                     ]
                 }
             ],
-            max_tokens: 1000
+            max_tokens: 500
         });
 
         const analysis = response.choices[0].message.content;
-        logger.logSuccess('Imagem processada com sucesso', {
-            analysis_length: analysis.length
+        logger.logMedia('Imagem processada com sucesso', '', 'image', { 
+            analysis_length: analysis.length 
         });
 
-        return analysis;
+        return `🖼️ *Análise da imagem:*\n\n${analysis}`;
     } catch (error) {
-        logger.logError(error, { context: 'processImageWithVision', image_path: imagePath });
-        throw error;
+        logger.logError('Erro ao processar imagem', error, { path: imagePath });
+        return "❌ Desculpe, não consegui processar esta imagem. Tente enviar novamente.";
     }
 }
 
-// Função para processar áudio com Whisper
-async function processAudioWithWhisper(audioPath) {
+async function processAudio(audioPath) {
     try {
-        logger.logInfo('Processando áudio com Whisper', { 
-            audio_path: audioPath 
+        logger.logMedia('Iniciando processamento de áudio', '', 'audio', { 
+            path: audioPath 
         });
 
+        const audioBuffer = fs.readFileSync(audioPath);
+        
         const response = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(audioPath),
+            file: new File([audioBuffer], 'audio.ogg', { type: 'audio/ogg' }),
             model: "whisper-1",
             language: "pt"
         });
 
         const transcription = response.text;
-        logger.logSuccess('Áudio transcrito com sucesso', {
-            transcription_length: transcription.length,
-            transcription: transcription.substring(0, 200) + (transcription.length > 200 ? '...' : '')
+        logger.logMedia('Áudio transcrito com sucesso', '', 'audio', { 
+            transcription_length: transcription.length 
         });
 
-        return transcription;
+        return `🎵 *Transcrição do áudio:* "${transcription}"`;
     } catch (error) {
-        logger.logError(error, { context: 'processAudioWithWhisper', audio_path: audioPath });
-        throw error;
+        logger.logError('Erro ao processar áudio', error, { path: audioPath });
+        return "❌ Desculpe, não consegui processar este áudio. Tente enviar novamente.";
     }
 }
 
-// Função para baixar mídia do WhatsApp
-async function downloadWhatsAppMedia(message, messageType) {
-    try {
-        const mediaData = await downloadMediaMessage(message, 'buffer', {});
-        
-        // Determinar extensão baseada no tipo
-        let extension = '.bin';
-        if (messageType === 'imageMessage') {
-            extension = message.message.imageMessage.mimetype === 'image/png' ? '.png' : '.jpg';
-        } else if (messageType === 'audioMessage') {
-            extension = '.ogg'; // WhatsApp usa OGG para áudio
-        }
-
-        // Criar nome único para o arquivo
-        const fileName = `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}${extension}`;
-        const filePath = path.join(MEDIA_DIR, fileName);
-
-        // Salvar arquivo
-        fs.writeFileSync(filePath, mediaData);
-        
-        logger.logMedia('DOWNLOAD', message.key.remoteJid, messageType, {
-            file_path: filePath,
-            file_size: `${(mediaData.length / 1024).toFixed(2)} KB`
-        });
-
-        return filePath;
-    } catch (error) {
-        logger.logError(error, { context: 'downloadWhatsAppMedia', messageType });
-        throw error;
-    }
-}
-
-// Função para limpar arquivos temporários
-function cleanupTempFile(filePath) {
-    try {
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-            logger.logInfo('Arquivo temporário removido', { file_path: filePath });
-        }
-    } catch (error) {
-        logger.logError(error, { context: 'cleanupTempFile', file_path: filePath });
-    }
-}
-
-// Classe ThreadManager ultra-segura
-class ThreadManager {
-    constructor() {
-        this.threads = new Map();
-        this.loadFromDisk();
-    }
-
-    loadFromDisk() {
-        try {
-            if (fs.existsSync(THREADS_FILE)) {
-                const data = fs.readFileSync(THREADS_FILE, 'utf-8');
-                const parsed = JSON.parse(data);
-                
-                // Limpa TUDO e reconstrói
-                this.threads.clear();
-                
-                for (const [key, value] of Object.entries(parsed)) {
-                    const cleanId = forceString(value);
-                    if (isValidThreadId(cleanId)) {
-                        this.threads.set(key, cleanId);
-                    }
-                }
-                
-                this.saveToDisk();
-                logger.logInfo('ThreadManager: Dados carregados e validados', { 
-                    threads_loaded: this.threads.size 
-                });
-            }
-        } catch (err) {
-            logger.logError(err, { context: 'ThreadManager.loadFromDisk' });
-            this.threads.clear();
-        }
-    }
-
-    saveToDisk() {
-        try {
-            const obj = {};
-            for (const [key, value] of this.threads.entries()) {
-                obj[key] = forceString(value);
-            }
-            fs.writeFileSync(THREADS_FILE, JSON.stringify(obj, null, 2));
-        } catch (err) {
-            logger.logError(err, { context: 'ThreadManager.saveToDisk' });
-        }
-    }
-
-    getThreadId(userId) {
-        const raw = this.threads.get(userId);
-        const clean = forceString(raw);
-        
-        if (isValidThreadId(clean)) {
-            logger.logThread('GET_EXISTING', userId, clean);
-            return clean;
-        }
-        
-        logger.logThread('NOT_FOUND', userId, null);
-        return null;
-    }
-
-    setThreadId(userId, threadId) {
-        const clean = forceString(threadId);
-        
-        if (isValidThreadId(clean)) {
-            this.threads.set(userId, clean);
-            this.saveToDisk();
-            logger.logThread('CREATE_NEW', userId, clean);
-            return clean;
-        }
-        
-        const error = new Error(`ThreadId inválido: ${threadId} -> ${clean}`);
-        logger.logError(error, { context: 'ThreadManager.setThreadId', userId, threadId });
-        throw error;
-    }
-
-    removeThreadId(userId) {
-        const threadId = this.threads.get(userId);
-        this.threads.delete(userId);
-        this.saveToDisk();
-        logger.logThread('REMOVE_CORRUPTED', userId, threadId);
-    }
-}
-
-const threadManager = new ThreadManager();
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-let currentQR = null;
-let connectionStatus = 'Iniciando...';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const authDir = process.env.SESSION_DATA_PATH || './config/session';
-if (!fs.existsSync(authDir)) {
-    fs.mkdirSync(authDir, { recursive: true });
-}
-
-// Configurar pasta public para servir arquivos estáticos
-app.use(express.static(path.join(__dirname, '../public')));
-
-let sock;
-
-async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        logger: {
-            level: 'silent',
-            info: () => {},
-            error: () => {},
-            warn: () => {},
-            debug: () => {},
-            trace: () => {},
-            child: () => ({
-                info: () => {},
-                error: () => {},
-                warn: () => {},
-                debug: () => {},
-                trace: () => {},
-            })
-        }
-    });
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            currentQR = qr;
-            connectionStatus = 'QR Code gerado - Escaneie na página web';
-            logger.logInfo('QR Code gerado', { status: connectionStatus });
-        }
-
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            connectionStatus = 'Conexão fechada - Reconectando...';
-            currentQR = null;
-            
-            logger.logInfo('Conexão fechada', { 
-                error: lastDisconnect?.error?.message,
-                will_reconnect: shouldReconnect 
-            });
-            
-            if (shouldReconnect) setTimeout(connectToWhatsApp, 5000);
-        } else if (connection === 'open') {
-            connectionStatus = 'Conectado e funcionando!';
-            currentQR = null;
-            logger.logSuccess('WhatsApp conectado com sucesso');
-        }
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('messages.upsert', async (m) => {
-        const message = m.messages[0];
-        if (!message.message || message.key.fromMe) return;
-
-        const from = message.key.remoteJid;
-        
-        // Detectar tipo de mensagem
-        const messageTypes = Object.keys(message.message);
-        const messageType = messageTypes[0];
-
-        logger.logInfo('Nova mensagem recebida', {
-            from: from.replace('@s.whatsapp.net', ''),
-            message_type: messageType,
-            timestamp: new Date().toISOString()
-        });
-
-        try {
-            if (messageType === 'conversation' || messageType === 'extendedTextMessage') {
-                // Mensagem de texto normal
-                const messageText = message.message.conversation || message.message.extendedTextMessage?.text || '';
-                
-                if (messageText.toLowerCase() === 'oi' || messageText.toLowerCase() === 'hello') {
-                    const response = 'Olá! Sou a A.Idugel, assistente virtual do Grupo Idugel.\n\nComo posso ajudá-lo?\n\n🎯 *Funcionalidades:*\n\n📝 Respondo perguntas em texto\n🖼️ Analiso imagens que você enviar\n🎵 Transcrevo áudios para texto\n\nEnvie sua pergunta, foto ou áudio!';
-                    await sock.sendMessage(from, { text: response });
-                    logger.logConversation(from, messageText, response, 'greeting', 0);
-                } else if (messageText.toLowerCase().includes('teste')) {
-                    const response = '✅ A.Idugel funcionando perfeitamente!\n\n🚀 *Recursos Ativos:*\n\n📝 Processamento de texto\n🖼️ Análise de imagens (GPT-4 Vision)\n🎵 Transcrição de áudio (Whisper)\n🧠 Sistema de memória por usuário\n📱 Formatação inteligente para WhatsApp';
-                    await sock.sendMessage(from, { text: response });
-                    logger.logConversation(from, messageText, response, 'test', 0);
-                } else if (messageText.trim()) {
-                    await processAIMessage(from, messageText, 'text');
-                }
-            } else if (messageType === 'imageMessage') {
-                // Mensagem com imagem
-                await processMediaMessage(message, from, 'image');
-            } else if (messageType === 'audioMessage') {
-                // Mensagem com áudio
-                await processMediaMessage(message, from, 'audio');
-            } else {
-                // Tipo de mensagem não suportado
-                await sock.sendMessage(from, { 
-                    text: '🤖 Desculpe, ainda não consigo processar este tipo de mídia.\n\n✅ *Tipos suportados:*\n\n📝 Texto\n🖼️ Imagens (JPG, PNG)\n🎵 Áudios\n\nEnvie um desses tipos para eu poder ajudar!' 
-                });
-            }
-        } catch (error) {
-            logger.logError(error, { 
-                context: 'message_handler',
-                from: from.replace('@s.whatsapp.net', ''),
-                message_type: messageType
-            });
-            
-            await sock.sendMessage(from, { 
-                text: '❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns segundos.' 
-            });
-        }
-    });
-}
-
-// Função para processar mensagens de mídia
-async function processMediaMessage(message, from, mediaType) {
-    const startTime = Date.now();
-    let tempFilePath = null;
-    
-    try {
-        // Baixar mídia
-        const messageTypeKey = mediaType === 'image' ? 'imageMessage' : 'audioMessage';
-        tempFilePath = await downloadWhatsAppMedia(message, messageTypeKey);
-        
-        let processedContent = '';
-        let userMessage = '';
-        
-        if (mediaType === 'image') {
-            // Verificar se há texto junto com a imagem
-            userMessage = message.message.imageMessage.caption || '';
-            
-            // Processar imagem com GPT-4 Vision
-            processedContent = await processImageWithVision(tempFilePath, userMessage);
-            
-            logger.logMedia('PROCESS_IMAGE', from, 'image', {
-                caption: userMessage,
-                analysis_length: processedContent.length
-            });
-            
-        } else if (mediaType === 'audio') {
-            // Transcrever áudio com Whisper
-            const transcription = await processAudioWithWhisper(tempFilePath);
-            
-            if (transcription.trim()) {
-                // Processar transcrição como mensagem de texto
-                await processAIMessage(from, transcription, 'audio');
-                return; // Sair aqui pois processAIMessage já enviará a resposta
-            } else {
-                processedContent = '🎵 Recebi seu áudio, mas não consegui transcrever o conteúdo.\n\nPode tentar enviar novamente?';
-            }
-            
-            logger.logMedia('PROCESS_AUDIO', from, 'audio', {
-                transcription: transcription.substring(0, 200) + (transcription.length > 200 ? '...' : ''),
-                transcription_length: transcription.length
-            });
-        }
-        
-        // Aplicar formatação inteligente
-        if (processedContent) {
-            processedContent = formatForWhatsApp(processedContent);
-            await sock.sendMessage(from, { text: processedContent });
-            
-            const processingTime = Date.now() - startTime;
-            logger.logConversation(from, `[${mediaType.toUpperCase()}] ${userMessage}`, processedContent, 'direct_media', processingTime, mediaType);
-        }
-        
-    } catch (error) {
-        logger.logError(error, { 
-            context: 'processMediaMessage',
-            from: from.replace('@s.whatsapp.net', ''),
-            media_type: mediaType
-        });
-        
-        await sock.sendMessage(from, { 
-            text: `❌ Desculpe, ocorreu um erro ao processar ${mediaType === 'image' ? 'sua imagem' : 'seu áudio'}.\n\nTente novamente.` 
-        });
-    } finally {
-        // Limpar arquivo temporário
-        if (tempFilePath) {
-            cleanupTempFile(tempFilePath);
-        }
-    }
-}
-
-// Função para criar thread com validação extrema
+// Funções da API OpenAI
 async function createNewThread() {
-    const response = await openai.beta.threads.create();
-    
-    if (!response || !response.id) {
-        throw new Error('Resposta inválida da criação de thread');
+    try {
+        const response = await openai.beta.threads.create();
+        const threadId = ensureStringThreadId(response.id);
+        logger.logThread('Nova thread criada', '', threadId);
+        return threadId;
+    } catch (error) {
+        logger.logError('Erro ao criar thread', error);
+        throw error;
     }
-    
-    const threadId = forceString(response.id);
-    
-    if (!isValidThreadId(threadId)) {
-        throw new Error(`Thread ID inválido criado: ${threadId}`);
-    }
-    
-    return threadId;
 }
 
-// Função para adicionar mensagem com validação extrema
 async function addMessageToThread(threadId, messageText) {
-    const cleanThreadId = forceString(threadId);
-    
-    if (!isValidThreadId(cleanThreadId)) {
-        throw new Error(`Thread ID inválido para mensagem: ${cleanThreadId}`);
-    }
-    
-    const result = await openai.beta.threads.messages.create(
-        cleanThreadId,
-        {
+    try {
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const response = await openai.beta.threads.messages.create(cleanThreadId, {
             role: 'user',
             content: String(messageText)
-        }
-    );
-    
-    return result;
+        });
+        logger.logThread('Mensagem adicionada à thread', '', cleanThreadId, { 
+            message_length: messageText.length 
+        });
+        return response;
+    } catch (error) {
+        logger.logError('Erro ao adicionar mensagem', error, { threadId, messageText });
+        throw error;
+    }
 }
 
-// Função para criar run com validação extrema
 async function createRun(threadId) {
-    const cleanThreadId = forceString(threadId);
-    
-    if (!isValidThreadId(cleanThreadId)) {
-        throw new Error(`Thread ID inválido para run: ${cleanThreadId}`);
+    try {
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const assistantId = String(process.env.OPENAI_ASSISTANT_ID);
+        
+        const response = await openai.beta.threads.runs.create(cleanThreadId, {
+            assistant_id: assistantId
+        });
+        
+        logger.logThread('Run criado', '', cleanThreadId, { 
+            run_id: response.id,
+            assistant_id: assistantId 
+        });
+        return response;
+    } catch (error) {
+        logger.logError('Erro ao criar run', error, { threadId });
+        throw error;
     }
-    
-    const run = await openai.beta.threads.runs.create(
-        cleanThreadId,
-        {
-            assistant_id: String(process.env.OPENAI_ASSISTANT_ID)
-        }
-    );
-    
-    return run;
 }
 
-// Função para recuperar status do run
 async function retrieveRunStatus(threadId, runId) {
-    const cleanThreadId = forceString(threadId);
-    const cleanRunId = forceString(runId);
-    
-    if (!isValidThreadId(cleanThreadId)) {
-        throw new Error(`Thread ID inválido para status: ${cleanThreadId}`);
+    try {
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const response = await openai.beta.threads.runs.retrieve(cleanThreadId, String(runId));
+        return response;
+    } catch (error) {
+        logger.logError('Erro ao verificar status do run', error, { threadId, runId });
+        throw error;
     }
-    
-    return await openai.beta.threads.runs.retrieve(cleanThreadId, cleanRunId);
 }
 
-// Função para listar mensagens
 async function listMessages(threadId) {
-    const cleanThreadId = forceString(threadId);
-    
-    if (!isValidThreadId(cleanThreadId)) {
-        throw new Error(`Thread ID inválido para listar: ${cleanThreadId}`);
+    try {
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const response = await openai.beta.threads.messages.list(cleanThreadId);
+        return response;
+    } catch (error) {
+        logger.logError('Erro ao listar mensagens', error, { threadId });
+        throw error;
     }
-    
-    return await openai.beta.threads.messages.list(cleanThreadId);
 }
 
-// Função principal de processamento (atualizada com formatação)
-async function processAIMessage(from, messageText, sourceType = 'text') {
+// Função principal de processamento
+async function processAIMessage(from, messageText, mediaType = 'text') {
     const startTime = Date.now();
     
     try {
-        logger.logInfo(`Processando mensagem ${sourceType.toUpperCase()}`, {
+        logger.logInfo('Iniciando processamento de mensagem', { 
             from: from.replace('@s.whatsapp.net', ''),
-            message: messageText.substring(0, 200) + (messageText.length > 200 ? '...' : ''),
-            source_type: sourceType
+            message_length: messageText.length,
+            media_type: mediaType
         });
-        
-        // Busca thread existente
+
         let threadId = threadManager.getThreadId(from);
         
-        // Se não existe, cria nova
         if (!threadId) {
+            logger.logThread('Criando nova thread', from, null);
             threadId = await createNewThread();
-            threadId = threadManager.setThreadId(from, threadId);
+            threadManager.setThreadId(from, threadId);
+        } else {
+            logger.logThread('Usando thread existente', from, threadId);
         }
 
-        // Validação final antes de usar
-        if (!isValidThreadId(threadId)) {
-            throw new Error(`Thread ID final inválido: ${threadId}`);
-        }
-
-        // Adiciona mensagem
         await addMessageToThread(threadId, messageText);
-
-        // Cria run
         const run = await createRun(threadId);
-
-        // Aguarda conclusão
-        let result = null;
+        
+        // Aguarda conclusão do run
+        let runStatus = await retrieveRunStatus(threadId, run.id);
         let attempts = 0;
         const maxAttempts = 30;
-
-        while (attempts < maxAttempts) {
-            const status = await retrieveRunStatus(threadId, run.id);
-
-            if (status.status === 'completed') {
-                const messages = await listMessages(threadId);
-                
-                const lastMessage = messages.data[0];
-                if (lastMessage && lastMessage.content[0] && lastMessage.content[0].text) {
-                    result = lastMessage.content[0].text.value;
-                    
-                    // Aplicar filtro de citações
-                    const originalLength = result.length;
-                    result = removeCitations(result);
-                    
-                    logger.logInfo('Citações removidas', {
-                        original_length: originalLength,
-                        cleaned_length: result.length,
-                        citations_removed: originalLength - result.length
-                    });
-                    
-                    break;
-                }
-            } else if (status.status === 'failed' || status.status === 'cancelled') {
-                throw new Error(`Run falhou: ${status.status}`);
-            }
-
+        
+        while (runStatus.status === 'queued' || runStatus.status === 'in_progress') {
             attempts++;
-            await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-
-        if (result) {
-            // Adicionar prefixo baseado no tipo de fonte
-            let responsePrefix = '';
-            if (sourceType === 'audio') {
-                responsePrefix = '🎵 *Transcrição do áudio:* "' + messageText + '"\n\n';
+            if (attempts > maxAttempts) {
+                throw new Error('Timeout: Run demorou muito para completar');
             }
             
-            let finalResponse = responsePrefix + result;
-            
-            // APLICAR FORMATAÇÃO INTELIGENTE
-            finalResponse = formatForWhatsApp(finalResponse);
-            
-            await sock.sendMessage(from, { text: finalResponse });
-            
-            const processingTime = Date.now() - startTime;
-            logger.logConversation(from, messageText, finalResponse, threadId, processingTime, sourceType);
-            logger.logSuccess('Resposta enviada com sucesso', {
-                user: from.replace('@s.whatsapp.net', ''),
-                processing_time: `${(processingTime / 1000).toFixed(2)}s`,
-                source_type: sourceType,
-                formatted: true
+            logger.logInfo('Aguardando conclusão do run', { 
+                attempt: attempts,
+                status: runStatus.status,
+                thread_id: threadId
             });
-        } else {
-            throw new Error('Timeout: Run não completou no tempo esperado');
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            runStatus = await retrieveRunStatus(threadId, run.id);
         }
 
+        if (runStatus.status !== 'completed') {
+            throw new Error(`Run falhou com status: ${runStatus.status}`);
+        }
+
+        const messages = await listMessages(threadId);
+        const lastMessage = messages.data[0];
+        
+        if (!lastMessage || !lastMessage.content || !lastMessage.content[0]) {
+            throw new Error('Resposta vazia da IA');
+        }
+
+        let reply = lastMessage.content[0].text.value;
+        
+        // Aplica limpeza de citações e formatação
+        reply = removeCitations(reply);
+        reply = formatForWhatsApp(reply);
+        
+        const processingTime = Date.now() - startTime;
+        
+        logger.logConversation('Resposta processada', from, messageText, reply, threadId, {
+            processingTime,
+            mediaType
+        });
+
+        return reply;
+        
     } catch (error) {
-        threadManager.removeThreadId(from);
-        logger.logError(error, { 
-            context: 'processAIMessage',
-            user: from.replace('@s.whatsapp.net', ''),
-            message: messageText,
-            source_type: sourceType
+        logger.logError('Erro no processamento de mensagem', error, { 
+            from: from.replace('@s.whatsapp.net', ''),
+            messageText: messageText.substring(0, 100)
         });
         
-        await sock.sendMessage(from, { 
-            text: 'Desculpe, estou com dificuldades técnicas.\n\nErro: ' + error.message + '\n\nTente novamente em alguns segundos.' 
-        });
+        // Remove thread corrompida em caso de erro
+        threadManager.removeThread(from);
+        
+        return "❌ Desculpe, estou com dificuldades técnicas. Tente novamente em alguns segundos.";
     }
 }
 
-// Rota para ver estatísticas
-app.get('/stats', (req, res) => {
-    const stats = logger.generateStats();
-    res.json(stats);
+// Configuração do Express
+const app = express();
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Estatísticas
+let stats = {
+    conversations: 0,
+    errors: 0,
+    threads: 0,
+    media_processed: 0,
+    uptime: Date.now()
+};
+
+// Rotas
+app.get('/', (req, res) => {
+    const qrCodeHtml = `
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>IAIDUGEL WhatsApp Bot - Grupo Idugel</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                
+                body {
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                }
+                
+                .container {
+                    text-align: center;
+                    background: rgba(255, 255, 255, 0.1);
+                    backdrop-filter: blur(10px);
+                    border-radius: 20px;
+                    padding: 40px;
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    max-width: 500px;
+                    width: 90%;
+                }
+                
+                .logo {
+                    width: 100px;
+                    height: 100px;
+                    border-radius: 50%;
+                    margin: 0 auto 20px;
+                    background: linear-gradient(45deg, #4facfe 0%, #00f2fe 100%);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 36px;
+                    font-weight: bold;
+                    color: white;
+                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                    border: 4px solid white;
+                    object-fit: cover;
+                    overflow: hidden;
+                }
+                
+                .logo img {
+                    width: 100%;
+                    height: 100%;
+                    object-fit: cover;
+                    border-radius: 50%;
+                }
+                
+                .logo img:error {
+                    display: none;
+                }
+                
+                h1 {
+                    font-size: 28px;
+                    margin-bottom: 10px;
+                    background: linear-gradient(45deg, #fff, #f0f0f0);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                    background-clip: text;
+                }
+                
+                .subtitle {
+                    font-size: 16px;
+                    margin-bottom: 30px;
+                    opacity: 0.9;
+                }
+                
+                .qr-container {
+                    background: white;
+                    border-radius: 15px;
+                    padding: 20px;
+                    margin: 20px 0;
+                    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+                }
+                
+                #qrcode {
+                    margin: 0 auto;
+                }
+                
+                .status {
+                    margin: 20px 0;
+                    padding: 15px;
+                    border-radius: 10px;
+                    background: rgba(255, 255, 255, 0.1);
+                    border-left: 4px solid #4facfe;
+                }
+                
+                .features {
+                    text-align: left;
+                    margin: 20px 0;
+                    background: rgba(255, 255, 255, 0.05);
+                    border-radius: 10px;
+                    padding: 20px;
+                }
+                
+                .features h3 {
+                    color: #4facfe;
+                    margin-bottom: 15px;
+                    text-align: center;
+                }
+                
+                .features ul {
+                    list-style: none;
+                }
+                
+                .features li {
+                    margin: 8px 0;
+                    padding-left: 20px;
+                    position: relative;
+                }
+                
+                .features li:before {
+                    content: "✨";
+                    position: absolute;
+                    left: 0;
+                }
+                
+                .instructions {
+                    background: rgba(255, 255, 255, 0.1);
+                    border-radius: 10px;
+                    padding: 20px;
+                    margin: 20px 0;
+                    border-left: 4px solid #00f2fe;
+                }
+                
+                .footer {
+                    margin-top: 30px;
+                    font-size: 14px;
+                    opacity: 0.8;
+                }
+                
+                .links {
+                    margin: 20px 0;
+                }
+                
+                .links a {
+                    color: #4facfe;
+                    text-decoration: none;
+                    margin: 0 10px;
+                    padding: 8px 16px;
+                    border: 1px solid #4facfe;
+                    border-radius: 20px;
+                    transition: all 0.3s ease;
+                    display: inline-block;
+                    margin-bottom: 10px;
+                }
+                
+                .links a:hover {
+                    background: #4facfe;
+                    color: white;
+                    transform: translateY(-2px);
+                }
+                
+                .pulse {
+                    animation: pulse 2s infinite;
+                }
+                
+                @keyframes pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.05); }
+                    100% { transform: scale(1); }
+                }
+                
+                @media (max-width: 600px) {
+                    .container {
+                        padding: 20px;
+                        margin: 20px;
+                    }
+                    
+                    .logo {
+                        width: 80px;
+                        height: 80px;
+                        font-size: 28px;
+                    }
+                    
+                    h1 {
+                        font-size: 24px;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="logo pulse">
+                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" onerror="this.style.display='none'; this.parentElement.innerHTML='IG';" />
+                </div>
+                
+                <h1>IAIDUGEL</h1>
+                <div class="subtitle">Assistente Inteligente Multimodal</div>
+                
+                <div class="status">
+                    <strong>🔄 Status:</strong> <span id="status">Carregando...</span>
+                </div>
+                
+                <div class="qr-container">
+                    <div id="qrcode">Gerando QR Code...</div>
+                </div>
+                
+                <div class="instructions">
+                    <strong>📱 Como conectar:</strong><br>
+                    1. Abra o WhatsApp no seu celular<br>
+                    2. Toque em "Dispositivos conectados"<br>
+                    3. Toque em "Conectar um dispositivo"<br>
+                    4. Escaneie o QR Code acima
+                </div>
+                
+                <div class="features">
+                    <h3>🚀 Tecnologia Grupo Idugel</h3>
+                    <ul>
+                        <li>IA Avançada com GPT-4</li>
+                        <li>Processamento de Imagens</li>
+                        <li>Transcrição de Áudios</li>
+                        <li>Formatação Inteligente</li>
+                        <li>Arquitetura Robusta</li>
+                        <li>Segurança e Validação</li>
+                        <li>Disponibilidade 24/7</li>
+                        <li>Sistema Multi-thread</li>
+                        <li>Filtro Inteligente</li>
+                        <li>Logs Avançados</li>
+                    </ul>
+                </div>
+                
+                <div class="links">
+                    <a href="/stats" target="_blank">📊 Estatísticas</a>
+                    <a href="/logs" target="_blank">📋 Logs</a>
+                </div>
+                
+                <div class="footer">
+                    <strong>Grupo Idugel</strong><br>
+                    Tecnologia e Inovação em IA
+                </div>
+            </div>
+            
+            <script>
+                function updateStatus() {
+                    fetch('/status')
+                        .then(response => response.json())
+                        .then(data => {
+                            document.getElementById('status').textContent = data.status;
+                            if (data.qr) {
+                                document.getElementById('qrcode').innerHTML = data.qr;
+                            }
+                        })
+                        .catch(() => {
+                            document.getElementById('status').textContent = 'Erro de conexão';
+                        });
+                }
+                
+                updateStatus();
+                setInterval(updateStatus, 5000);
+            </script>
+        </body>
+        </html>
+    `;
+    res.send(qrCodeHtml);
 });
 
-// Rota para baixar logs
+app.get('/status', (req, res) => {
+    res.json({ 
+        status: global.connectionStatus || 'Inicializando...',
+        qr: global.qrCode || null
+    });
+});
+
+app.get('/stats', (req, res) => {
+    const uptime = Date.now() - stats.uptime;
+    const uptimeHours = Math.floor(uptime / (1000 * 60 * 60));
+    const uptimeMinutes = Math.floor((uptime % (1000 * 60 * 60)) / (1000 * 60));
+    
+    const logSize = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE).size : 0;
+    
+    res.json({
+        ...stats,
+        threads_active: Object.keys(threadManager.threads).length,
+        uptime_readable: `${uptimeHours}h ${uptimeMinutes}m`,
+        log_file_size: `${(logSize / 1024).toFixed(2)} KB`,
+        timestamp: new Date().toISOString()
+    });
+});
+
 app.get('/logs', (req, res) => {
     if (fs.existsSync(LOG_FILE)) {
         res.download(LOG_FILE, 'idugel-conversations.log');
     } else {
-        res.status(404).json({ error: 'Log file not found' });
+        res.status(404).send('Arquivo de log não encontrado');
     }
 });
 
-// Servidor web para mostrar QR Code com identidade visual do Grupo Idugel
-app.get('/', (req, res) => {
-    if (currentQR) {
-        qrcode.generate(currentQR, { small: true }, (qr) => {
-            res.send(`
-                <!DOCTYPE html>
-                <html lang="pt-BR">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>A.Idugel - IA WhatsApp Bot</title>
-                    <style>
-                        * {
-                            margin: 0;
-                            padding: 0;
-                            box-sizing: border-box;
-                        }
-                        
-                        body {
-                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            min-height: 100vh;
-                            display: flex;
-                            flex-direction: column;
-                            align-items: center;
-                            justify-content: center;
-                            color: #333;
-                            padding: 20px;
-                        }
-                        
-                        .container {
-                            background: rgba(255, 255, 255, 0.95);
-                            border-radius: 20px;
-                            padding: 40px;
-                            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-                            text-align: center;
-                            max-width: 600px;
-                            width: 100%;
-                            backdrop-filter: blur(10px);
-                        }
-                        
-                        .logo {
-                            width: 120px;
-                            height: 120px;
-                            border-radius: 50%;
-                            margin: 0 auto 30px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            overflow: hidden;
-                            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                            border: 4px solid white;
-                        }
-                        
-                        .logo img {
-                            width: 100%;
-                            height: 100%;
-                            object-fit: cover;
-                            border-radius: 50%;
-                        }
-                        
-                        h1 {
-                            color: #2c3e50;
-                            margin-bottom: 10px;
-                            font-size: 2.2em;
-                            font-weight: 700;
-                        }
-                        
-                        .subtitle {
-                            color: #7f8c8d;
-                            margin-bottom: 30px;
-                            font-size: 1.1em;
-                            line-height: 1.6;
-                        }
-                        
-                        .status {
-                            background: linear-gradient(45deg, #27ae60, #2ecc71);
-                            color: white;
-                            padding: 15px 25px;
-                            border-radius: 50px;
-                            margin-bottom: 30px;
-                            font-weight: 600;
-                            font-size: 1.1em;
-                            box-shadow: 0 5px 15px rgba(46, 204, 113, 0.3);
-                        }
-                        
-                        .qr-section {
-                            background: #f8f9fa;
-                            border-radius: 15px;
-                            padding: 30px;
-                            margin: 30px 0;
-                            border: 3px dashed #667eea;
-                        }
-                        
-                        .qr-title {
-                            color: #2c3e50;
-                            margin-bottom: 20px;
-                            font-size: 1.4em;
-                            font-weight: 600;
-                        }
-                        
-                        .qr-code {
-                            font-family: 'Courier New', monospace;
-                            font-size: 8px;
-                            line-height: 8px;
-                            background: white;
-                            padding: 20px;
-                            border-radius: 10px;
-                            margin: 20px 0;
-                            box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
-                            white-space: pre;
-                            overflow: auto;
-                        }
-                        
-                        .instructions {
-                            color: #34495e;
-                            font-size: 1em;
-                            line-height: 1.6;
-                            margin-top: 20px;
-                        }
-                        
-                        .tech-info {
-                            background: linear-gradient(45deg, #3498db, #2980b9);
-                            color: white;
-                            padding: 25px;
-                            border-radius: 15px;
-                            margin-top: 30px;
-                            text-align: left;
-                        }
-                        
-                        .tech-title {
-                            font-size: 1.3em;
-                            font-weight: 600;
-                            margin-bottom: 15px;
-                            text-align: center;
-                        }
-                        
-                        .tech-features {
-                            list-style: none;
-                            padding: 0;
-                        }
-                        
-                        .tech-features li {
-                            padding: 8px 0;
-                            border-bottom: 1px solid rgba(255,255,255,0.2);
-                        }
-                        
-                        .tech-features li:last-child {
-                            border-bottom: none;
-                        }
-                        
-                        .tech-features li::before {
-                            content: "🚀 ";
-                            margin-right: 10px;
-                        }
-                        
-                        .footer {
-                            margin-top: 30px;
-                            color: #7f8c8d;
-                            font-size: 0.9em;
-                        }
-                        
-                        .refresh-note {
-                            background: #fff3cd;
-                            color: #856404;
-                            padding: 15px;
-                            border-radius: 10px;
-                            margin-top: 20px;
-                            border-left: 4px solid #ffc107;
-                        }
-                        
-                        .admin-links {
-                            margin-top: 20px;
-                            display: flex;
-                            gap: 10px;
-                            justify-content: center;
-                            flex-wrap: wrap;
-                        }
-                        
-                        .admin-links a {
-                            background: linear-gradient(45deg, #667eea, #764ba2);
-                            color: white;
-                            padding: 8px 16px;
-                            border-radius: 20px;
-                            text-decoration: none;
-                            font-size: 0.9em;
-                            transition: transform 0.3s ease;
-                        }
-                        
-                        .admin-links a:hover {
-                            transform: translateY(-2px);
-                        }
-                        
-                        @media (max-width: 768px) {
-                            .container {
-                                padding: 20px;
-                                margin: 10px;
-                            }
-                            
-                            h1 {
-                                font-size: 1.8em;
-                            }
-                            
-                            .logo {
-                                width: 80px;
-                                height: 80px;
-                            }
-                        }
-                        
-                        .pulse {
-                            animation: pulse 2s infinite;
-                        }
-                        
-                        @keyframes pulse {
-                            0% { transform: scale(1); }
-                            50% { transform: scale(1.05); }
-                            100% { transform: scale(1); }
-                        }
-                        
-                        .new-feature {
-                            background: linear-gradient(45deg, #e74c3c, #c0392b);
-                            color: white;
-                            padding: 15px;
-                            border-radius: 10px;
-                            margin: 20px 0;
-                            border-left: 4px solid #fff;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="logo pulse">
-                            <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" onerror="this.style.display='none'; this.parentNode.innerHTML='<div style=\\'background: linear-gradient(45deg, #667eea, #764ba2); width: 100%; height: 100%; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 48px; font-weight: bold; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);\\'>IG</div>';" />
-                        </div>
-                        
-                        <h1>🤖 A.Idugel</h1>
-                        <div class="subtitle">
-                            Assistente Inteligente <strong>MULTIMODAL</strong> com <strong>FORMATAÇÃO INTELIGENTE</strong><br>
-                            Desenvolvido pelo <strong>Grupo Idugel</strong> - Tecnologia avançada de IA
-                        </div>
-                        
-                        <div class="status">
-                            📡 Status: ${connectionStatus}
-                        </div>
-                        
-                        <div class="new-feature">
-                            🆕 <strong>NOVA FUNCIONALIDADE:</strong> Formatação inteligente para WhatsApp!<br>
-                            Agora as respostas são organizadas em blocos legíveis com espaçamento adequado.
-                        </div>
-                        
-                        <div class="qr-section">
-                            <div class="qr-title">📱 Escaneie o QR Code para conectar</div>
-                            <div class="qr-code">${qr}</div>
-                            <div class="instructions">
-                                <strong>Como conectar:</strong><br>
-                                1. Abra o WhatsApp no seu celular<br>
-                                2. Toque em "Dispositivos conectados"<br>
-                                3. Toque em "Conectar um dispositivo"<br>
-                                4. Aponte a câmera para o QR Code acima
-                            </div>
-                        </div>
-                        
-                        <div class="tech-info">
-                            <div class="tech-title">🔧 A.Idugel - Tecnologia Multimodal Avançada</div>
-                            <ul class="tech-features">
-                                <li><strong>IA Avançada:</strong> Processamento inteligente de linguagem natural</li>
-                                <li><strong>GPT-4 Vision:</strong> Análise inteligente de imagens e fotos</li>
-                                <li><strong>Whisper AI:</strong> Transcrição precisa de áudios para texto</li>
-                                <li><strong>Formatação Inteligente:</strong> Respostas organizadas para WhatsApp</li>
-                                <li><strong>Integração OpenAI:</strong> Powered by GPT-4 para respostas precisas</li>
-                                <li><strong>Arquitetura Robusta:</strong> Sistema ultra-confiável e escalável</li>
-                                <li><strong>Segurança:</strong> Validação rigorosa e proteção de dados</li>
-                                <li><strong>Disponibilidade 24/7:</strong> Atendimento automatizado contínuo</li>
-                                <li><strong>Multi-thread:</strong> Gerenciamento inteligente de conversas</li>
-                                <li><strong>Filtro Inteligente:</strong> Respostas limpas sem citações</li>
-                                <li><strong>Sistema de Logs:</strong> Monitoramento completo de conversas</li>
-                            </ul>
-                        </div>
-                        
-                        <div class="admin-links">
-                            <a href="/stats" target="_blank">📊 Estatísticas</a>
-                            <a href="/logs" target="_blank">📋 Download Logs</a>
-                        </div>
-                        
-                        <div class="refresh-note">
-                            💡 <strong>Dica:</strong> Esta página atualiza automaticamente a cada 30 segundos<br>
-                            🎯 <strong>Novo:</strong> Formatação inteligente para melhor legibilidade!
-                        </div>
-                        
-                        <div class="footer">
-                            <strong>Grupo Idugel</strong> - Inovação em Tecnologia e IA<br>
-                            © 2024 - Todos os direitos reservados
-                        </div>
-                    </div>
+// Inicialização do WhatsApp
+async function startWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(process.env.SESSION_DATA_PATH || './config/session');
+    
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        logger: { level: 'silent', child: () => ({ level: 'silent' }) }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            require('qrcode').toDataURL(qr, (err, url) => {
+                if (!err) {
+                    global.qrCode = `<img src="${url}" style="max-width: 100%; height: auto;" />`;
+                    global.connectionStatus = 'QR Code gerado! Escaneie para conectar.';
+                    console.log('🔐 QR Code gerado! Acesse a página web para escanear.');
+                }
+            });
+        }
+        
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('📴 Conexão fechada devido a:', lastDisconnect?.error, ', reconectando:', shouldReconnect);
+            global.connectionStatus = 'Desconectado - Tentando reconectar...';
+            
+            if (shouldReconnect) {
+                setTimeout(startWhatsApp, 5000);
+            }
+        } else if (connection === 'open') {
+            console.log('✅ WhatsApp conectado e pronto com Baileys!');
+            global.connectionStatus = 'Conectado e funcionando!';
+            global.qrCode = '<div style="color: green; font-size: 18px;">✅ Conectado com sucesso!</div>';
+        }
+    });
+
+    // Event listener para mensagens (CORRIGIDO)
+    sock.ev.on('messages.upsert', async (m) => {
+        const message = m.messages[0];
+        
+        if (!message.key.fromMe && message.message) {
+            const from = message.key.remoteJid;
+            let messageText = '';
+            let mediaType = 'text';
+            let processedContent = '';
+
+            try {
+                // Verifica se é uma mensagem de texto
+                if (message.message.conversation) {
+                    messageText = message.message.conversation;
+                    processedContent = messageText;
+                } 
+                else if (message.message.extendedTextMessage) {
+                    messageText = message.message.extendedTextMessage.text;
+                    processedContent = messageText;
+                }
+                // Verifica se é uma imagem
+                else if (message.message.imageMessage) {
+                    mediaType = 'image';
+                    const caption = message.message.imageMessage.caption || '';
                     
-                    <script>
-                        // Auto-refresh a cada 30 segundos
-                        setTimeout(() => location.reload(), 30000);
+                    logger.logMedia('Imagem recebida', from, 'image', { caption });
+                    
+                    try {
+                        const buffer = await downloadMediaMessage(message, 'buffer', {});
+                        const imagePath = path.join(MEDIA_DIR, `image_${Date.now()}.jpg`);
+                        fs.writeFileSync(imagePath, buffer);
                         
-                        // Adiciona efeito de hover nos elementos
-                        document.querySelectorAll('.tech-features li').forEach(item => {
-                            item.addEventListener('mouseenter', function() {
-                                this.style.transform = 'translateX(10px)';
-                                this.style.transition = 'transform 0.3s ease';
-                            });
-                            
-                            item.addEventListener('mouseleave', function() {
-                                this.style.transform = 'translateX(0)';
-                            });
-                        });
-                    </script>
-                </body>
-                </html>
-            `);
-        });
-    } else {
-        res.send(`
-            <!DOCTYPE html>
-            <html lang="pt-BR">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>A.Idugel - IA WhatsApp Bot</title>
-                <style>
-                    * {
-                        margin: 0;
-                        padding: 0;
-                        box-sizing: border-box;
+                        processedContent = await processImage(imagePath, caption);
+                        stats.media_processed++;
+                        
+                        // Limpa arquivo temporário
+                        fs.unlinkSync(imagePath);
+                    } catch (error) {
+                        logger.logError('Erro ao processar imagem', error, { from });
+                        processedContent = "❌ Erro ao processar imagem. Tente novamente.";
                     }
+                }
+                // Verifica se é um áudio
+                else if (message.message.audioMessage) {
+                    mediaType = 'audio';
                     
-                    body {
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                        min-height: 100vh;
-                        display: flex;
-                        flex-direction: column;
-                        align-items: center;
-                        justify-content: center;
-                        color: #333;
-                        padding: 20px;
+                    logger.logMedia('Áudio recebido', from, 'audio');
+                    
+                    try {
+                        const buffer = await downloadMediaMessage(message, 'buffer', {});
+                        const audioPath = path.join(MEDIA_DIR, `audio_${Date.now()}.ogg`);
+                        fs.writeFileSync(audioPath, buffer);
+                        
+                        const transcription = await processAudio(audioPath);
+                        processedContent = transcription;
+                        
+                        // Processa a transcrição como mensagem normal
+                        const transcribedText = transcription.replace('🎵 *Transcrição do áudio:* "', '').replace('"', '');
+                        messageText = transcribedText;
+                        stats.media_processed++;
+                        
+                        // Limpa arquivo temporário
+                        fs.unlinkSync(audioPath);
+                    } catch (error) {
+                        logger.logError('Erro ao processar áudio', error, { from });
+                        processedContent = "❌ Erro ao processar áudio. Tente novamente.";
+                        messageText = processedContent;
                     }
+                }
+                else {
+                    // Tipo de mensagem não suportado
+                    logger.logInfo('Tipo de mensagem não suportado', { 
+                        from: from.replace('@s.whatsapp.net', ''),
+                        messageType: Object.keys(message.message)[0]
+                    });
+                    return;
+                }
+
+                console.log(`📩 Mensagem de ${from}: ${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}`);
+                console.log(`🤖 Processando mensagem IA para ${from}`);
+
+                // Processa com IA apenas se for texto ou transcrição de áudio
+                let reply;
+                if (mediaType === 'text' || mediaType === 'audio') {
+                    reply = await processAIMessage(from, messageText, mediaType);
                     
-                    .container {
-                        background: rgba(255, 255, 255, 0.95);
-                        border-radius: 20px;
-                        padding: 40px;
-                        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-                        text-align: center;
-                        max-width: 600px;
-                        width: 100%;
-                        backdrop-filter: blur(10px);
+                    // Para áudio, adiciona a transcrição antes da resposta
+                    if (mediaType === 'audio') {
+                        reply = `${processedContent}\n\n${reply}`;
                     }
-                    
-                    .logo {
-                        width: 120px;
-                        height: 120px;
-                        border-radius: 50%;
-                        margin: 0 auto 30px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        overflow: hidden;
-                        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                        border: 4px solid white;
-                    }
-                    
-                    .logo img {
-                        width: 100%;
-                        height: 100%;
-                        object-fit: cover;
-                        border-radius: 50%;
-                    }
-                    
-                    h1 {
-                        color: #2c3e50;
-                        margin-bottom: 10px;
-                        font-size: 2.2em;
-                        font-weight: 700;
-                    }
-                    
-                    .subtitle {
-                        color: #7f8c8d;
-                        margin-bottom: 30px;
-                        font-size: 1.1em;
-                        line-height: 1.6;
-                    }
-                    
-                    .status {
-                        background: linear-gradient(45deg, #f39c12, #e67e22);
-                        color: white;
-                        padding: 15px 25px;
-                        border-radius: 50px;
-                        margin-bottom: 30px;
-                        font-weight: 600;
-                        font-size: 1.1em;
-                        box-shadow: 0 5px 15px rgba(243, 156, 18, 0.3);
-                    }
-                    
-                    .loading {
-                        display: inline-block;
-                        width: 40px;
-                        height: 40px;
-                        border: 4px solid #f3f3f3;
-                        border-top: 4px solid #667eea;
-                        border-radius: 50%;
-                        animation: spin 1s linear infinite;
-                        margin: 20px 0;
-                    }
-                    
-                    @keyframes spin {
-                        0% { transform: rotate(0deg); }
-                        100% { transform: rotate(360deg); }
-                    }
-                    
-                    .footer {
-                        margin-top: 30px;
-                        color: #7f8c8d;
-                        font-size: 0.9em;
-                    }
-                    
-                    .pulse {
-                        animation: pulse 2s infinite;
-                    }
-                    
-                    @keyframes pulse {
-                        0% { transform: scale(1); }
-                        50% { transform: scale(1.05); }
-                        100% { transform: scale(1); }
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="logo pulse">
-                        <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" onerror="this.style.display='none'; this.parentNode.innerHTML='<div style=\\'background: linear-gradient(45deg, #667eea, #764ba2); width: 100%; height: 100%; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 48px; font-weight: bold; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);\\'>IG</div>';" />
-                    </div>
-                    
-                    <h1>🤖 A.Idugel</h1>
-                    <div class="subtitle">
-                        Assistente Inteligente <strong>MULTIMODAL</strong> com <strong>FORMATAÇÃO INTELIGENTE</strong><br>
-                        Desenvolvido pelo <strong>Grupo Idugel</strong> - Tecnologia avançada de IA
-                    </div>
-                    
-                    <div class="status">
-                        ⏳ Status: ${connectionStatus}
-                    </div>
-                    
-                    <div class="loading"></div>
-                    
-                    <p style="color: #7f8c8d; margin: 20px 0;">
-                        <em>Aguarde enquanto o sistema inicializa...</em><br>
-                        A página será atualizada automaticamente<br>
-                        <strong>🎯 Novo: Formatação inteligente para WhatsApp!</strong>
-                    </p>
-                    
-                    <div class="footer">
-                        <strong>Grupo Idugel</strong> - Inovação em Tecnologia e IA<br>
-                        © 2024 - Todos os direitos reservados
-                    </div>
-                </div>
+                } else {
+                    // Para imagens, usa o resultado do processamento direto
+                    reply = processedContent;
+                }
+
+                await sock.sendMessage(from, { text: reply });
+                console.log('✅ Resposta enviada com sucesso');
                 
-                <script>
-                    // Auto-refresh a cada 5 segundos quando não há QR
-                    setTimeout(() => location.reload(), 5000);
-                </script>
-            </body>
-            </html>
-        `);
-    }
-});
+                stats.conversations++;
+
+            } catch (error) {
+                logger.logError('Erro no processamento geral', error, { from, messageText });
+                
+                const errorReply = "❌ Desculpe, estou com dificuldades técnicas. Tente novamente em alguns segundos.";
+                await sock.sendMessage(from, { text: errorReply });
+                
+                stats.errors++;
+            }
+        }
+    });
+
+    return sock;
+}
+
+// Inicialização
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Servidor HTTP na porta ${PORT}`);
-    logger.logSuccess('Servidor iniciado', { port: PORT });
+    logger.logInfo('Servidor iniciado', { port: PORT });
 });
 
-connectToWhatsApp();
+startWhatsApp().catch(error => {
+    logger.logError('Erro ao iniciar WhatsApp', error);
+    console.error('❌ Erro ao iniciar:', error);
+});
+
+// Tratamento de erros não capturados
+process.on('unhandledRejection', (error) => {
+    logger.logError('Erro não tratado', error);
+    console.error('❌ Erro não tratado:', error);
+});
+
+process.on('uncaughtException', (error) => {
+    logger.logError('Exceção não capturada', error);
+    console.error('❌ Exceção não capturada:', error);
+});
 
