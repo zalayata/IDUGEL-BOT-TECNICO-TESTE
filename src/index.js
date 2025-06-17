@@ -895,6 +895,9 @@ Forneça uma resposta natural e útil baseada no conteúdo da imagem.`;
 // Servidor web
 const app = express();
 
+// Servir arquivos estáticos (incluindo o logo)
+app.use(express.static(__dirname));
+
 app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - global.stats.uptime) / 1000);
     const hours = Math.floor(uptime / 3600);
@@ -932,7 +935,7 @@ app.get('/', (req, res) => {
             }
             
             .header {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
                 color: white;
                 padding: 40px 20px;
                 text-align: center;
@@ -950,10 +953,18 @@ app.get('/', (req, res) => {
                 justify-content: center;
                 font-size: 48px;
                 font-weight: bold;
-                color: #667eea;
+                color: #dc2626;
                 border: 4px solid white;
                 box-shadow: 0 8px 16px rgba(0,0,0,0.2);
                 animation: pulse 2s infinite;
+                overflow: hidden;
+            }
+            
+            .logo img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                border-radius: 50%;
             }
             
             @keyframes pulse {
@@ -1088,11 +1099,11 @@ app.get('/', (req, res) => {
             }
             
             .links a {
-                color: #667eea;
+                color: #dc2626;
                 text-decoration: none;
                 margin: 0 15px;
                 font-weight: 500;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 background-clip: text;
@@ -1134,7 +1145,7 @@ app.get('/', (req, res) => {
         <div class="container">
             <div class="header">
                 <div class="logo">
-                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
+                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" 
                          onerror="this.style.display='none'; this.parentNode.innerHTML='AI';" />
                 </div>
                 <h1>A.IDUGEL</h1>
