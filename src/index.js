@@ -11,7 +11,7 @@ const { OpenAI } = require('openai');
 const path = require('path');
 const fs = require('fs');
 
-// ===== VERSÃO MULTIMODAL COM FORMATAÇÃO INTELIGENTE =====
+// ===== VERSÃO MULTIMODAL COM FORMATAÇÃO INTELIGENTE - LOGGER CORRIGIDO =====
 
 const THREADS_FILE = './threadMap.json';
 const LOG_FILE = './idugel-conversations.log';
@@ -22,7 +22,7 @@ if (!fs.existsSync(MEDIA_DIR)) {
     fs.mkdirSync(MEDIA_DIR, { recursive: true });
 }
 
-// Sistema de Logs Avançado
+// Sistema de Logs Avançado (CORRIGIDO para compatibilidade com Baileys)
 class ConversationLogger {
     constructor() {
         this.ensureLogFile();
@@ -64,6 +64,31 @@ class ConversationLogger {
         } catch (err) {
             console.error('❌ Erro ao salvar log:', err);
         }
+    }
+
+    // Métodos compatíveis com Baileys
+    error(message, ...args) {
+        console.error('🔴 [BAILEYS ERROR]', message, ...args);
+    }
+
+    warn(message, ...args) {
+        console.warn('🟡 [BAILEYS WARN]', message, ...args);
+    }
+
+    info(message, ...args) {
+        console.info('🔵 [BAILEYS INFO]', message, ...args);
+    }
+
+    debug(message, ...args) {
+        console.debug('⚪ [BAILEYS DEBUG]', message, ...args);
+    }
+
+    trace(message, ...args) {
+        console.trace('⚫ [BAILEYS TRACE]', message, ...args);
+    }
+
+    child() {
+        return this;
     }
 
     logConversation(action, user, question, answer, threadId, details = {}) {
@@ -851,7 +876,8 @@ async function startWhatsApp() {
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: { level: 'silent', child: () => ({ level: 'silent' }) }
+        logger: logger, // Usa nosso logger compatível
+        browser: ['IAIDUGEL Bot', 'Chrome', '1.0.0']
     });
 
     sock.ev.on('creds.update', saveCreds);
