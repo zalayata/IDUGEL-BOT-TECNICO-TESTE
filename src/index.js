@@ -1134,10 +1134,10 @@ app.get('/', (req, res) => {
         <div class="container">
             <div class="header">
                 <div class="logo">
-                    <img src="/public/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
-                         onerror="this.style.display='none'; this.parentNode.innerHTML='IG';" />
+                    <img src="/logo-idugel.jpg" alt="Logo Grupo Idugel" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" 
+                         onerror="this.style.display='none'; this.parentNode.innerHTML='AI';" />
                 </div>
-                <h1>IAIDUGEL</h1>
+                <h1>A.IDUGEL</h1>
                 <div class="subtitle">Tecnologia Grupo Idugel</div>
             </div>
             
@@ -1197,7 +1197,7 @@ app.get('/', (req, res) => {
             </div>
             
             <div class="footer">
-                <p>© 2024 IAIDUGEL - Tecnologia Grupo Idugel</p>
+                <p>© 2024 A.IDUGEL - Tecnologia Grupo Idugel</p>
                 <div class="links">
                     <a href="#">Suporte</a>
                     <a href="#">Documentação</a>
