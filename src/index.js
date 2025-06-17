@@ -1,227 +1,362 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const OpenAI = require('openai');
-const fs = require('fs');
+require('dotenv').config();
+
+if (!globalThis.crypto) {
+    globalThis.crypto = require('crypto').webcrypto;
+}
+
+const { makeWASocket, useMultiFileAuthState, downloadMediaMessage, DisconnectReason } = require('@whiskeysockets/baileys');
+const express = require('express');
 const path = require('path');
+const fs = require('fs');
+const OpenAI = require('openai');
 const QRCode = require('qrcode');
 
-// Configuração da OpenAI
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
+const THREADS_FILE = path.join(__dirname, 'threadMap.json');
+const LOG_FILE = path.join(__dirname, 'idugel-conversations.log');
+const MEDIA_DIR = path.join(__dirname, 'media');
 
-// Logger personalizado compatível com Baileys
+// Criar diretório de mídia se não existir
+if (!fs.existsSync(MEDIA_DIR)) {
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
+
+// Sistema de logs avançado compatível com Baileys
 class ConversationLogger {
     constructor() {
-        this.logFile = path.join(__dirname, 'conversation.log');
-    }
-
-    log(level, action, message = '', user = '', mediaType = '', additionalData = {}) {
-        const timestamp = new Date().toISOString();
-        const logEntry = {
-            timestamp,
-            level: level.toUpperCase(),
-            action,
-            user,
-            message: typeof message === 'string' ? message : JSON.stringify(message),
-            media_type: mediaType,
-            ...additionalData
+        this.colors = {
+            CONVERSATION: '\x1b[36m', // Cyan
+            THREAD: '\x1b[33m',       // Yellow
+            ERROR: '\x1b[31m',        // Red
+            SUCCESS: '\x1b[32m',      // Green
+            INFO: '\x1b[34m',         // Blue
+            MEDIA: '\x1b[35m',        // Magenta
+            FORMAT: '\x1b[90m',       // Gray
+            RESET: '\x1b[0m'
         };
-
-        // Log para console
-        console.log(`[${timestamp}] ${level.toUpperCase()}: ${JSON.stringify(logEntry, null, 2)}`);
-
-        // Log para arquivo
-        try {
-            fs.appendFileSync(this.logFile, JSON.stringify(logEntry) + '\n');
-        } catch (error) {
-            console.error('Erro ao escrever no arquivo de log:', error);
-        }
-    }
-
-    logConversation(action, user, message, additionalData = {}) {
-        this.log('CONVERSATION', action, message, user, '', additionalData);
-    }
-
-    logThread(action, user, threadId, additionalData = {}) {
-        this.log('THREAD', action, `Thread: ${threadId}`, user, '', additionalData);
-    }
-
-    logError(action, error, user = '', additionalData = {}) {
-        this.log('ERROR', action, error.message || error, user, '', {
-            stack: error.stack,
-            ...additionalData
-        });
-    }
-
-    logSuccess(action, message, user = '', additionalData = {}) {
-        this.log('SUCCESS', action, message, user, '', additionalData);
-    }
-
-    logInfo(action, message, additionalData = {}) {
-        this.log('INFO', action, message, '', '', additionalData);
-    }
-
-    logMedia(action, user, mediaType, additionalData = {}) {
-        this.log('MEDIA', action, '', user, mediaType, additionalData);
-    }
-
-    logFormat(action, originalText, formattedText, user = '') {
-        this.log('FORMAT', action, '', user, '', {
-            original_length: originalText.length,
-            formatted_length: formattedText.length,
-            original_preview: originalText.substring(0, 100),
-            formatted_preview: formattedText.substring(0, 100)
-        });
     }
 
     // Métodos compatíveis com Baileys
-    trace(message, ...args) {
-        this.logInfo('BAILEYS_TRACE', message, { args });
-    }
-
-    debug(message, ...args) {
-        this.logInfo('BAILEYS_DEBUG', message, { args });
-    }
-
-    info(message, ...args) {
-        this.logInfo('BAILEYS_INFO', message, { args });
+    error(message, ...args) {
+        this.logError('BAILEYS_ERROR', new Error(message), { args });
     }
 
     warn(message, ...args) {
-        this.log('WARN', 'BAILEYS_WARN', message, '', '', { args });
+        this.logInfo('BAILEYS_WARN', { message, args });
     }
 
-    error(message, ...args) {
-        this.log('ERROR', 'BAILEYS_ERROR', message, '', '', { args });
+    info(message, ...args) {
+        this.logInfo('BAILEYS_INFO', { message, args });
     }
 
-    fatal(message, ...args) {
-        this.log('ERROR', 'BAILEYS_FATAL', message, '', '', { args });
+    debug(message, ...args) {
+        this.logInfo('BAILEYS_DEBUG', { message, args });
+    }
+
+    trace(message, ...args) {
+        this.logInfo('BAILEYS_TRACE', { message, args });
     }
 
     child() {
-        return this;
+        return this; // Retorna a mesma instância para compatibilidade
+    }
+
+    logConversation(action, from, messageText, reply, threadId, details = {}) {
+        this.log('CONVERSATION', {
+            action,
+            user: from.replace('@s.whatsapp.net', ''),
+            question: messageText.substring(0, 100),
+            answer: reply.substring(0, 100),
+            thread_id: threadId,
+            processing_time: details.processingTime,
+            media_type: details.mediaType
+        });
+    }
+
+    logThread(action, user, threadId, details = {}) {
+        this.log('THREAD', {
+            action,
+            user: user.replace('@s.whatsapp.net', ''),
+            thread_id: threadId,
+            ...details
+        });
+    }
+
+    logError(action, error, details = {}) {
+        this.log('ERROR', {
+            action,
+            message: error.message,
+            stack: error.stack,
+            ...details
+        });
+    }
+
+    logSuccess(action, details = {}) {
+        this.log('SUCCESS', {
+            action,
+            ...details
+        });
+    }
+
+    logInfo(action, details = {}) {
+        this.log('INFO', {
+            action,
+            ...details
+        });
+    }
+
+    logMedia(action, user, mediaType, details = {}) {
+        this.log('MEDIA', {
+            action,
+            user: user.replace('@s.whatsapp.net', ''),
+            media_type: mediaType,
+            ...details
+        });
+    }
+
+    logFormat(action, details = {}) {
+        this.log('FORMAT', {
+            action,
+            ...details
+        });
+    }
+
+    log(type, data) {
+        const timestamp = new Date().toISOString();
+        const color = this.colors[type] || this.colors.INFO;
+        const reset = this.colors.RESET;
+        
+        // Log colorido no console
+        console.log(`${color}[${timestamp}] ${type}:${reset}`, JSON.stringify(data, null, 2));
+        
+        // Log em arquivo
+        const logEntry = {
+            timestamp,
+            type,
+            ...data
+        };
+        
+        try {
+            fs.appendFileSync(LOG_FILE, JSON.stringify(logEntry) + '\n');
+        } catch (error) {
+            console.error('Erro ao escrever log:', error);
+        }
     }
 }
 
-// Instância global do logger
 const logger = new ConversationLogger();
 
-// Gerenciador de threads
+// Função para limpar citações preservando links
+function removeCitations(text) {
+    if (!text) return '';
+    
+    logger.logFormat('Iniciando limpeza de citações', {
+        original_length: text.length,
+        has_citations: /【\d+†source】/.test(text)
+    });
+
+    let cleanText = text
+        // Remove citações específicas: 【número†source】
+        .replace(/【\d+†source】/g, '')
+        // Remove citações numéricas: [número], [número], (número)
+        .replace(/【\d+】/g, '')
+        .replace(/\[\d+\]/g, '')
+        .replace(/\(\d+\)/g, '')
+        .replace(/\[\d+:\d+\]/g, '')
+        .replace(/\(\d+:\d+\)/g, '')
+        // Converte markdown de links para links diretos: [texto](link) → link
+        .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
+        // Remove linhas "Sources:" ou "Fontes:"
+        .replace(/^(Sources?|Fontes?):\s*$/gim, '')
+        // Remove múltiplos espaços e quebras
+        .replace(/\s+/g, ' ')
+        .replace(/\n\s*\n\s*\n/g, '\n\n')
+        .trim();
+
+    logger.logFormat('Citações removidas', {
+        original_length: text.length,
+        clean_length: cleanText.length,
+        removed_chars: text.length - cleanText.length
+    });
+
+    return cleanText;
+}
+
+// Função para formatação inteligente para WhatsApp
+function formatForWhatsApp(text) {
+    if (!text) return '';
+    
+    logger.logFormat('Iniciando formatação para WhatsApp', {
+        original_length: text.length
+    });
+
+    let formatted = text
+        // Quebra parágrafos longos após pontos finais
+        .replace(/\. ([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ])/g, '.\n\n$1')
+        // Adiciona espaçamento após dois pontos seguidos de texto
+        .replace(/: ([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ])/g, ':\n\n$1')
+        // Organiza listas com bullets
+        .replace(/^- /gm, '• ')
+        // Quebra antes de URLs para ficarem em linha separada
+        .replace(/([.!?]) (https?:\/\/[^\s]+)/g, '$1\n\n$2')
+        // Quebra antes de emails
+        .replace(/([.!?]) ([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g, '$1\n\n$2')
+        // Quebra antes de números de telefone
+        .replace(/([.!?]) (\+?\d{2}\d{8,})/g, '$1\n\n$2')
+        // Quebra antes de perguntas para o usuário
+        .replace(/([.!?]) (Como posso|Posso|Gostaria|Deseja|Precisa)/g, '$1\n\n$2')
+        // Espaça frases de encerramento
+        .replace(/([.!?]) (Obrigad[oa]|Atenciosamente|Cordialmente)/g, '$1\n\n$2')
+        // Remove múltiplas quebras de linha (máximo 2)
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+    logger.logFormat('Formatação concluída', {
+        original_length: text.length,
+        formatted_length: formatted.length,
+        line_breaks_added: (formatted.match(/\n/g) || []).length
+    });
+
+    return formatted;
+}
+
+// Configuração OpenAI
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Funções auxiliares para validação
+function forceString(value) {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && value.id) return String(value.id);
+    return String(value || '');
+}
+
+function isValidThreadId(threadId) {
+    const cleanId = forceString(threadId);
+    return cleanId && cleanId.startsWith('thread_') && cleanId.length > 10;
+}
+
+function ensureStringThreadId(threadId) {
+    const cleanId = forceString(threadId);
+    if (!isValidThreadId(cleanId)) {
+        throw new Error(`Invalid thread ID: ${cleanId}`);
+    }
+    return cleanId;
+}
+
+// Gerenciador de Threads com controle de primeira interação
 class ThreadManager {
     constructor() {
-        this.threads = new Map();
-        this.threadFile = path.join(__dirname, 'threads.json');
-        this.loadThreads();
+        this.threads = this.loadThreads();
+        this.firstInteractions = new Set(); // Rastreia primeiras interações
     }
 
     loadThreads() {
         try {
-            if (fs.existsSync(this.threadFile)) {
-                const data = fs.readFileSync(this.threadFile, 'utf8');
-                const threadsData = JSON.parse(data);
+            if (fs.existsSync(THREADS_FILE)) {
+                const data = fs.readFileSync(THREADS_FILE, 'utf8');
+                const parsed = JSON.parse(data);
                 
-                // Validar e limpar dados corrompidos
-                for (const [userId, threadData] of Object.entries(threadsData)) {
-                    if (threadData && typeof threadData === 'object' && threadData.threadId) {
-                        this.threads.set(userId, threadData);
+                // Limpa dados corrompidos
+                const cleaned = {};
+                for (const [key, value] of Object.entries(parsed)) {
+                    const cleanValue = forceString(value);
+                    if (isValidThreadId(cleanValue)) {
+                        cleaned[key] = cleanValue;
                     } else {
-                        logger.logError('THREAD_LOAD_ERROR', new Error(`Dados corrompidos para usuário ${userId}`), userId);
+                        logger.logThread('Removendo thread corrompida', key, cleanValue);
                     }
                 }
                 
-                logger.logSuccess('THREADS_LOADED', `${this.threads.size} threads carregadas`);
+                return cleaned;
             }
         } catch (error) {
-            logger.logError('THREAD_LOAD_ERROR', error);
-            this.threads = new Map();
+            logger.logError('Erro ao carregar threads', error);
         }
+        return {};
     }
 
     saveThreads() {
         try {
-            const threadsData = Object.fromEntries(this.threads);
-            fs.writeFileSync(this.threadFile, JSON.stringify(threadsData, null, 2));
-            logger.logSuccess('THREADS_SAVED', `${this.threads.size} threads salvas`);
+            fs.writeFileSync(THREADS_FILE, JSON.stringify(this.threads, null, 2));
         } catch (error) {
-            logger.logError('THREAD_SAVE_ERROR', error);
+            logger.logError('Erro ao salvar threads', error);
         }
     }
 
-    getThread(userId) {
-        return this.threads.get(userId);
-    }
-
-    setThread(userId, threadId, runId = null) {
-        const threadData = {
-            threadId,
-            runId,
-            createdAt: new Date().toISOString(),
-            lastUsed: new Date().toISOString()
-        };
+    getThreadId(from) {
+        const raw = this.threads[from];
+        logger.logThread('Buscando thread', from, raw, { type: typeof raw });
         
-        this.threads.set(userId, threadData);
-        this.saveThreads();
-        logger.logThread('THREAD_SET', userId, threadId, { runId });
-        return threadData;
-    }
-
-    updateLastUsed(userId) {
-        const thread = this.threads.get(userId);
-        if (thread) {
-            thread.lastUsed = new Date().toISOString();
-            this.saveThreads();
+        if (typeof raw === 'string' && isValidThreadId(raw)) {
+            return raw;
         }
+        
+        logger.logThread('Thread não encontrada ou inválida', from, raw);
+        return null;
     }
 
-    clearThread(userId) {
-        this.threads.delete(userId);
+    setThreadId(from, threadId) {
+        const cleanId = ensureStringThreadId(threadId);
+        this.threads[from] = cleanId;
         this.saveThreads();
-        logger.logThread('THREAD_CLEARED', userId, 'N/A');
+        logger.logThread('Thread salva', from, cleanId);
+        return cleanId;
     }
 
-    isFirstInteraction(userId) {
-        return !this.threads.has(userId);
+    removeThread(from) {
+        delete this.threads[from];
+        this.firstInteractions.delete(from); // Remove também do controle de primeira interação
+        this.saveThreads();
+        logger.logThread('Thread removida', from, null);
+    }
+
+    // Controle de primeira interação
+    isFirstInteraction(from) {
+        const hasThread = this.getThreadId(from) !== null;
+        const isFirst = !hasThread;
+        
+        if (isFirst) {
+            this.firstInteractions.add(from);
+            logger.logThread('🆕 PRIMEIRA INTERAÇÃO DETECTADA', from, null, { is_first: true });
+        } else {
+            logger.logThread('🔄 INTERAÇÃO CONTINUADA', from, this.getThreadId(from), { is_first: false });
+        }
+        
+        return isFirst;
     }
 }
 
-// Instância global do gerenciador de threads
 const threadManager = new ThreadManager();
 
-// Função para processar imagem
+// Funções de processamento de mídia com logs ultra-detalhados
 async function processImage(imagePath, caption = '') {
     try {
         logger.logMedia('🖼️ INICIANDO PROCESSAMENTO DE IMAGEM', '', 'image', {
             path: imagePath,
-            caption: caption
+            caption: caption,
+            file_exists: fs.existsSync(imagePath)
         });
 
-        // Verificar se o arquivo existe
         if (!fs.existsSync(imagePath)) {
             throw new Error(`Arquivo de imagem não encontrado: ${imagePath}`);
         }
 
-        // Ler o arquivo de imagem
         const imageBuffer = fs.readFileSync(imagePath);
-        
-        if (!imageBuffer || imageBuffer.length === 0) {
-            throw new Error('Buffer de imagem vazio');
-        }
-
         logger.logMedia('📁 ARQUIVO LIDO COM SUCESSO', '', 'image', {
-            buffer_size: imageBuffer.length
+            buffer_size: imageBuffer.length,
+            buffer_type: typeof imageBuffer
         });
 
-        // Converter para base64
         const base64Image = imageBuffer.toString('base64');
-        
         logger.logMedia('🔄 CONVERSÃO BASE64 CONCLUÍDA', '', 'image', {
-            base64_preview: base64Image.substring(0, 50) + '...',
-            base64_size: base64Image.length
+            base64_length: base64Image.length,
+            base64_preview: base64Image.substring(0, 50) + '...'
         });
 
-        // Preparar prompt
-        const prompt = caption || "Analise esta imagem e descreva o que você vê de forma detalhada.";
+        const prompt = caption ? 
+            `Analise esta imagem. Contexto adicional: ${caption}` :
+            "Analise esta imagem e descreva o que você vê de forma detalhada.";
 
         logger.logMedia('🤖 ENVIANDO PARA GPT-4O', '', 'image', {
             prompt: prompt,
@@ -229,302 +364,311 @@ async function processImage(imagePath, caption = '') {
             max_tokens: 500
         });
 
-        // Enviar para GPT-4o
         const response = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: [{
-                role: "user",
-                content: [
-                    { type: "text", text: prompt },
-                    {
-                        type: "image_url",
-                        image_url: {
-                            url: `data:image/jpeg;base64,${base64Image}`
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: prompt
+                        },
+                        {
+                            type: "image_url",
+                            image_url: {
+                                url: `data:image/jpeg;base64,${base64Image}`
+                            }
                         }
-                    }
-                ]
-            }],
+                    ]
+                }
+            ],
             max_tokens: 500
         });
 
         const analysis = response.choices[0].message.content;
-        
         logger.logMedia('✅ ANÁLISE DE IMAGEM CONCLUÍDA', '', 'image', {
             analysis_length: analysis.length,
-            analysis_preview: analysis.substring(0, 100) + '...'
+            response_preview: analysis.substring(0, 100) + '...'
         });
 
         // Limpar arquivo temporário
         try {
             fs.unlinkSync(imagePath);
-            logger.logMedia('🗑️ ARQUIVO TEMPORÁRIO REMOVIDO', '', 'image', {
-                path: imagePath
-            });
+            logger.logMedia('🗑️ ARQUIVO TEMPORÁRIO REMOVIDO', '', 'image', { path: imagePath });
         } catch (cleanupError) {
-            logger.logError('CLEANUP_ERROR', cleanupError, '', { path: imagePath });
+            logger.logError('Erro ao remover arquivo temporário', cleanupError, { path: imagePath });
         }
 
-        return analysis;
-
+        return analysis; // Retorna apenas a análise, sem formatação extra
     } catch (error) {
-        logger.logError('❌ ERRO NO PROCESSAMENTO DE IMAGEM', error, '', {
-            path: imagePath
-        });
+        logger.logError('❌ ERRO NO PROCESSAMENTO DE IMAGEM', error, { path: imagePath });
+        
+        // Tentar limpar arquivo em caso de erro
+        try {
+            if (fs.existsSync(imagePath)) {
+                fs.unlinkSync(imagePath);
+            }
+        } catch (cleanupError) {
+            logger.logError('Erro ao limpar arquivo após falha', cleanupError);
+        }
+        
         return "❌ Desculpe, não consegui processar esta imagem. Tente enviar novamente.";
     }
 }
 
-// Função para processar áudio
 async function processAudio(audioPath) {
     try {
         logger.logMedia('🎵 INICIANDO PROCESSAMENTO DE ÁUDIO', '', 'audio', {
-            path: audioPath
+            path: audioPath,
+            file_exists: fs.existsSync(audioPath)
         });
 
-        // Verificar se o arquivo existe
         if (!fs.existsSync(audioPath)) {
             throw new Error(`Arquivo de áudio não encontrado: ${audioPath}`);
         }
 
-        // Ler o arquivo de áudio
         const audioBuffer = fs.readFileSync(audioPath);
-        
-        if (!audioBuffer || audioBuffer.length === 0) {
-            throw new Error('Buffer de áudio vazio');
-        }
-
         logger.logMedia('📁 ARQUIVO DE ÁUDIO LIDO', '', 'audio', {
             buffer_size: audioBuffer.length
         });
 
         logger.logMedia('🤖 ENVIANDO PARA WHISPER', '', 'audio', {
-            model: 'whisper-1'
+            model: 'whisper-1',
+            language: 'pt'
         });
 
-        // Transcrever com Whisper
-        const transcription = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(audioPath),
+        const response = await openai.audio.transcriptions.create({
+            file: new File([audioBuffer], 'audio.ogg', { type: 'audio/ogg' }),
             model: "whisper-1",
             language: "pt"
         });
 
+        const transcription = response.text;
         logger.logMedia('✅ TRANSCRIÇÃO CONCLUÍDA', '', 'audio', {
-            transcription_length: transcription.text.length,
-            transcription_preview: transcription.text.substring(0, 100) + '...'
+            transcription_length: transcription.length,
+            transcription_preview: transcription.substring(0, 100) + '...'
         });
 
         // Limpar arquivo temporário
         try {
             fs.unlinkSync(audioPath);
-            logger.logMedia('🗑️ ARQUIVO TEMPORÁRIO REMOVIDO', '', 'audio', {
-                path: audioPath
-            });
+            logger.logMedia('🗑️ ARQUIVO TEMPORÁRIO DE ÁUDIO REMOVIDO', '', 'audio', { path: audioPath });
         } catch (cleanupError) {
-            logger.logError('CLEANUP_ERROR', cleanupError, '', { path: audioPath });
+            logger.logError('Erro ao remover arquivo de áudio temporário', cleanupError, { path: audioPath });
         }
 
-        return transcription.text;
-
+        return transcription;
     } catch (error) {
-        logger.logError('❌ ERRO NO PROCESSAMENTO DE ÁUDIO', error, '', {
-            path: audioPath
-        });
+        logger.logError('❌ ERRO NO PROCESSAMENTO DE ÁUDIO', error, { path: audioPath });
+        
+        // Tentar limpar arquivo em caso de erro
+        try {
+            if (fs.existsSync(audioPath)) {
+                fs.unlinkSync(audioPath);
+            }
+        } catch (cleanupError) {
+            logger.logError('Erro ao limpar arquivo de áudio após falha', cleanupError);
+        }
+        
         return "❌ Desculpe, não consegui processar este áudio. Tente enviar novamente.";
     }
 }
 
-// Função para formatar texto para WhatsApp
-function formatForWhatsApp(text) {
-    logger.logFormat('🔄 INICIANDO FORMATAÇÃO', text, '');
-    
-    let formatted = text
-        // Remover citações desnecessárias
-        .replace(/【\d+:\d+†[^】]*】/g, '')
-        .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-        .replace(/### /g, '*')
-        .replace(/## /g, '*')
-        .replace(/# /g, '*')
-        // Limitar linhas em branco
-        .replace(/\n{3,}/g, '\n\n')
-        // Remover espaços extras
-        .trim();
-
-    logger.logFormat('✅ FORMATAÇÃO CONCLUÍDA', text, formatted);
-    return formatted;
-}
-
-// Função para criar thread
-async function createThread() {
+// Funções da API OpenAI
+async function createNewThread() {
     try {
-        logger.logThread('🧵 CRIANDO NOVA THREAD', '', 'N/A');
-        const thread = await openai.beta.threads.create();
-        logger.logThread('✅ THREAD CRIADA', '', thread.id);
-        return thread.id;
+        const response = await openai.beta.threads.create();
+        const threadId = ensureStringThreadId(response.id);
+        logger.logThread('Nova thread criada', '', threadId);
+        return threadId;
     } catch (error) {
-        logger.logError('❌ ERRO AO CRIAR THREAD', error);
+        logger.logError('Erro ao criar thread', error);
         throw error;
     }
 }
 
-// Função para adicionar mensagem à thread
-async function addMessage(threadId, content, userId) {
+async function addMessageToThread(threadId, messageText) {
     try {
-        logger.logThread('📝 ADICIONANDO MENSAGEM À THREAD', userId, threadId, {
-            content_length: content.length,
-            content_preview: content.substring(0, 100) + '...'
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const response = await openai.beta.threads.messages.create(cleanThreadId, {
+            role: 'user',
+            content: messageText
         });
-
-        await openai.beta.threads.messages.create(threadId, {
-            role: "user",
-            content: content
+        logger.logThread('Mensagem adicionada à thread', '', cleanThreadId, {
+            message_id: response.id,
+            content_length: messageText.length
         });
-
-        logger.logThread('✅ MENSAGEM ADICIONADA À THREAD', userId, threadId);
+        return response;
     } catch (error) {
-        logger.logError('❌ ERRO AO ADICIONAR MENSAGEM', error, userId, { threadId });
+        logger.logError('Erro ao adicionar mensagem à thread', error, { threadId });
         throw error;
     }
 }
 
-// Função para executar assistente
-async function createRun(threadId, userId) {
+async function runAssistant(threadId) {
     try {
+        const cleanThreadId = ensureStringThreadId(threadId);
         const assistantId = String(process.env.OPENAI_ASSISTANT_ID);
         
-        logger.logThread('🤖 INICIANDO EXECUÇÃO DO ASSISTENTE', userId, threadId, {
+        logger.logThread('Executando assistente', '', cleanThreadId, { assistant_id: assistantId });
+        
+        const run = await openai.beta.threads.runs.create(cleanThreadId, {
             assistant_id: assistantId
         });
-
-        const run = await openai.beta.threads.runs.create(threadId, {
-            assistant_id: assistantId
-        });
-
-        logger.logThread('✅ EXECUÇÃO INICIADA', userId, threadId, {
+        
+        logger.logThread('Execução iniciada', '', cleanThreadId, { 
             run_id: run.id,
-            status: run.status
+            status: run.status 
         });
-
-        return run.id;
+        
+        return run;
     } catch (error) {
-        logger.logError('❌ ERRO AO EXECUTAR ASSISTENTE', error, userId, { threadId });
+        logger.logError('Erro ao executar assistente', error, { threadId });
         throw error;
     }
 }
 
-// Função para aguardar conclusão
-async function waitForCompletion(threadId, runId, userId) {
+async function waitForRunCompletion(threadId, runId) {
     try {
-        logger.logThread('⏳ AGUARDANDO CONCLUSÃO', userId, threadId, { run_id: runId });
-
-        while (true) {
-            const run = await openai.beta.threads.runs.retrieve(threadId, runId);
+        const cleanThreadId = ensureStringThreadId(threadId);
+        let attempts = 0;
+        const maxAttempts = 60; // 60 segundos máximo
+        
+        logger.logThread('Aguardando conclusão da execução', '', cleanThreadId, { 
+            run_id: runId,
+            max_attempts: maxAttempts 
+        });
+        
+        while (attempts < maxAttempts) {
+            const run = await openai.beta.threads.runs.retrieve(cleanThreadId, runId);
             
-            logger.logThread('🔄 STATUS DA EXECUÇÃO', userId, threadId, {
+            logger.logThread('Status da execução', '', cleanThreadId, {
                 run_id: runId,
-                status: run.status
+                status: run.status,
+                attempt: attempts + 1
             });
-
+            
             if (run.status === 'completed') {
-                logger.logThread('✅ EXECUÇÃO CONCLUÍDA', userId, threadId, { run_id: runId });
-                break;
-            } else if (run.status === 'failed' || run.status === 'cancelled' || run.status === 'expired') {
+                logger.logThread('Execução concluída com sucesso', '', cleanThreadId, { 
+                    run_id: runId,
+                    total_attempts: attempts + 1 
+                });
+                return run;
+            }
+            
+            if (run.status === 'failed' || run.status === 'cancelled' || run.status === 'expired') {
                 throw new Error(`Execução falhou com status: ${run.status}`);
             }
-
+            
             await new Promise(resolve => setTimeout(resolve, 1000));
+            attempts++;
         }
+        
+        throw new Error('Timeout: Execução não concluída no tempo esperado');
     } catch (error) {
-        logger.logError('❌ ERRO NA EXECUÇÃO', error, userId, { threadId, runId });
+        logger.logError('Erro ao aguardar conclusão da execução', error, { threadId, runId });
         throw error;
     }
 }
 
-// Função para obter resposta
-async function getResponse(threadId, userId) {
+async function getLatestMessage(threadId) {
     try {
-        logger.logThread('📥 OBTENDO RESPOSTA', userId, threadId);
-
-        const messages = await openai.beta.threads.messages.list(threadId);
-        const lastMessage = messages.data[0];
-
-        if (lastMessage && lastMessage.role === 'assistant') {
-            const content = lastMessage.content[0].text.value;
-            
-            logger.logThread('✅ RESPOSTA OBTIDA', userId, threadId, {
-                response_length: content.length,
-                response_preview: content.substring(0, 100) + '...'
-            });
-
-            return content;
+        const cleanThreadId = ensureStringThreadId(threadId);
+        const messages = await openai.beta.threads.messages.list(cleanThreadId);
+        
+        if (messages.data.length === 0) {
+            throw new Error('Nenhuma mensagem encontrada na thread');
         }
-
-        throw new Error('Nenhuma resposta do assistente encontrada');
+        
+        const latestMessage = messages.data[0];
+        
+        if (latestMessage.role !== 'assistant') {
+            throw new Error('Última mensagem não é do assistente');
+        }
+        
+        const content = latestMessage.content[0];
+        if (content.type !== 'text') {
+            throw new Error('Conteúdo da mensagem não é texto');
+        }
+        
+        const responseText = content.text.value;
+        
+        logger.logThread('Mensagem obtida', '', cleanThreadId, {
+            message_id: latestMessage.id,
+            content_length: responseText.length,
+            content_preview: responseText.substring(0, 100) + '...'
+        });
+        
+        return responseText;
     } catch (error) {
-        logger.logError('❌ ERRO AO OBTER RESPOSTA', error, userId, { threadId });
+        logger.logError('Erro ao obter última mensagem', error, { threadId });
         throw error;
     }
 }
 
-// Função principal para processar mensagem
-async function processMessage(content, userId) {
+// Função principal para processar mensagens
+async function processMessage(from, messageText, mediaType = 'text') {
+    const startTime = Date.now();
+    
     try {
-        logger.logConversation('🚀 INICIANDO PROCESSAMENTO', userId, content);
-
-        let threadData = threadManager.getThread(userId);
-        let threadId;
-
-        if (!threadData) {
-            // Primeira interação - criar nova thread
-            threadId = await createThread();
-            threadManager.setThread(userId, threadId);
-            
-            // Adicionar contexto para primeira interação
-            const contextMessage = `Esta é a primeira interação com este usuário. ${content}`;
-            await addMessage(threadId, contextMessage, userId);
+        logger.logConversation('Iniciando processamento', from, messageText, '', null, { 
+            media_type: mediaType,
+            message_length: messageText.length 
+        });
+        
+        let threadId = threadManager.getThreadId(from);
+        const isFirstInteraction = threadManager.isFirstInteraction(from);
+        
+        // Preparar mensagem com contexto adequado
+        let contextualMessage;
+        if (isFirstInteraction) {
+            contextualMessage = `Esta é a primeira interação com este usuário. ${messageText}`;
         } else {
-            // Conversa existente - usar thread existente
-            threadId = threadData.threadId;
-            threadManager.updateLastUsed(userId);
-            
-            // Adicionar instrução para não se apresentar novamente
-            const continuationMessage = `Continuando nossa conversa (não se apresente novamente): ${content}`;
-            await addMessage(threadId, continuationMessage, userId);
+            contextualMessage = `Continuando nossa conversa (não se apresente novamente): ${messageText}`;
         }
-
-        const runId = await createRun(threadId, userId);
-        await waitForCompletion(threadId, runId, userId);
-        const response = await getResponse(threadId, userId);
-
-        logger.logConversation('✅ PROCESSAMENTO CONCLUÍDO', userId, response);
-
-        return formatForWhatsApp(response);
+        
+        if (!threadId) {
+            threadId = await createNewThread();
+            threadManager.setThreadId(from, threadId);
+        }
+        
+        await addMessageToThread(threadId, contextualMessage);
+        const run = await runAssistant(threadId);
+        await waitForRunCompletion(threadId, run.id);
+        const response = await getLatestMessage(threadId);
+        
+        // Aplicar formatações
+        const cleanResponse = removeCitations(response);
+        const formattedResponse = formatForWhatsApp(cleanResponse);
+        
+        const processingTime = Date.now() - startTime;
+        
+        logger.logConversation('Processamento concluído', from, messageText, formattedResponse, threadId, {
+            processing_time: processingTime,
+            media_type: mediaType,
+            response_length: formattedResponse.length
+        });
+        
+        return formattedResponse;
     } catch (error) {
-        logger.logError('❌ ERRO NO PROCESSAMENTO', error, userId);
-        return "❌ Desculpe, ocorreu um erro. Tente novamente em alguns instantes.";
+        const processingTime = Date.now() - startTime;
+        logger.logError('Erro no processamento da mensagem', error, {
+            from,
+            processing_time: processingTime,
+            media_type: mediaType
+        });
+        
+        return "❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.";
     }
 }
 
-// Configuração do cliente WhatsApp
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
-        ]
-    }
-});
+// Configuração do socket WhatsApp
+let sock;
+let qrCodeData = '';
+let isConnected = false;
 
-// Variáveis globais para interface web
-global.qrCode = '';
-global.isReady = false;
+// Estatísticas globais
 global.stats = {
     messages: 0,
     images: 0,
@@ -532,196 +676,226 @@ global.stats = {
     uptime: Date.now()
 };
 
-// Eventos do cliente
-client.on('qr', async (qr) => {
+async function connectToWhatsApp() {
     try {
-        logger.logInfo('🔐 QR Code gerado! Acesse a página web para escanear.');
+        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
         
-        const qrCodeDataURL = await QRCode.toDataURL(qr, {
-            errorCorrectionLevel: 'M',
-            type: 'image/png',
-            quality: 0.92,
-            margin: 2,
-            color: {
-                dark: '#000000',
-                light: '#FFFFFF'
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: logger,
+            browser: ['A.IDUGEL Bot', 'Chrome', '1.0.0']
+        });
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                try {
+                    console.log('🔐 QR Code gerado! Acesse a página web para escanear.');
+                    logger.logSuccess('QR Code gerado', { qr_length: qr.length });
+                    
+                    // Converter QR Code para base64
+                    const qrCodeDataURL = await QRCode.toDataURL(qr, {
+                        errorCorrectionLevel: 'M',
+                        type: 'image/png',
+                        quality: 0.92,
+                        margin: 2,
+                        width: 400,
+                        color: {
+                            dark: '#000000',
+                            light: '#FFFFFF'
+                        }
+                    });
+                    
+                    qrCodeData = `
+                        <div style="text-align: center; padding: 20px;">
+                            <h3 style="color: #333; margin-bottom: 20px;">📱 Escaneie o QR Code</h3>
+                            <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block;">
+                                <img src="${qrCodeDataURL}" style="width: 400px; height: 400px;" />
+                            </div>
+                            <p style="color: #666; margin-top: 20px;">Abra o WhatsApp → Menu → Dispositivos conectados</p>
+                        </div>
+                    `;
+                } catch (error) {
+                    logger.logError('Erro ao gerar QR Code', error);
+                    qrCodeData = '<p style="color: red;">Erro ao gerar QR Code</p>';
+                }
+            }
+            
+            if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+                logger.logInfo('Conexão fechada', { 
+                    should_reconnect: shouldReconnect,
+                    reason: lastDisconnect?.error?.output?.statusCode 
+                });
+                
+                if (shouldReconnect) {
+                    connectToWhatsApp();
+                }
+                isConnected = false;
+            } else if (connection === 'open') {
+                logger.logSuccess('Conectado ao WhatsApp');
+                isConnected = true;
+                qrCodeData = '<p style="color: green;">✅ WhatsApp conectado com sucesso!</p>';
             }
         });
 
-        global.qrCode = `
-            <div style="text-align: center; padding: 20px;">
-                <h3 style="color: #333; margin-bottom: 20px;">📱 Escaneie o QR Code</h3>
-                <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block;">
-                    <img src="${qrCodeDataURL}" style="width: 400px; height: 400px;" />
-                </div>
-                <p style="color: #666; margin-top: 20px;">Abra o WhatsApp → Menu → Dispositivos conectados</p>
-            </div>
-        `;
-    } catch (error) {
-        logger.logError('QR_CODE_ERROR', error);
-        global.qrCode = '<p style="color: red;">Erro ao gerar QR Code</p>';
-    }
-});
+        sock.ev.on('creds.update', saveCreds);
 
-client.on('ready', () => {
-    global.isReady = true;
-    global.qrCode = '<p style="color: green;">✅ WhatsApp conectado com sucesso!</p>';
-    logger.logSuccess('WHATSAPP_READY', 'Cliente WhatsApp pronto para uso');
-});
-
-client.on('authenticated', () => {
-    logger.logSuccess('WHATSAPP_AUTH', 'WhatsApp autenticado com sucesso');
-});
-
-client.on('auth_failure', (msg) => {
-    logger.logError('WHATSAPP_AUTH_FAILURE', new Error(msg));
-});
-
-client.on('disconnected', (reason) => {
-    logger.logError('WHATSAPP_DISCONNECTED', new Error(reason));
-    global.isReady = false;
-});
-
-// Event listener para mensagens
-client.on('message', async (message) => {
-    try {
-        const userId = message.from;
-        
-        logger.logConversation('📨 MENSAGEM RECEBIDA', userId, '', {
-            type: message.type,
-            hasMedia: message.hasMedia,
-            timestamp: message.timestamp
-        });
-
-        // Verificar se é mensagem de grupo (ignorar)
-        if (message.from.includes('@g.us')) {
-            logger.logConversation('👥 MENSAGEM DE GRUPO IGNORADA', userId, '');
-            return;
-        }
-
-        // Processar diferentes tipos de mídia
-        if (message.hasMedia) {
-            const media = await message.downloadMedia();
-            
-            if (message.type === 'image') {
-                logger.logMedia('🖼️ IMAGEM DETECTADA', userId, 'image');
+        // Event listener para mensagens
+        sock.ev.on('messages.upsert', async (m) => {
+            try {
+                const message = m.messages[0];
                 
-                logger.logMedia('📥 INICIANDO DOWNLOAD DA IMAGEM', userId, 'image');
-                
-                if (!media || !media.data) {
-                    throw new Error('Falha no download da mídia');
-                }
-
-                const buffer = Buffer.from(media.data, 'base64');
-                
-                if (!buffer || buffer.length === 0) {
-                    throw new Error('Buffer de imagem vazio');
-                }
-
-                logger.logMedia('✅ DOWNLOAD DA IMAGEM CONCLUÍDO', userId, 'image', {
-                    buffer_size: buffer.length,
-                    mimetype: media.mimetype
-                });
-
-                // Salvar temporariamente
-                const tempDir = path.join(__dirname, 'media');
-                if (!fs.existsSync(tempDir)) {
-                    fs.mkdirSync(tempDir, { recursive: true });
-                }
-
-                const imagePath = path.join(tempDir, `image_${Date.now()}.jpg`);
-                fs.writeFileSync(imagePath, buffer);
-
-                logger.logMedia('💾 IMAGEM SALVA TEMPORARIAMENTE', userId, 'image', {
-                    path: imagePath
-                });
-
-                // Processar imagem
-                const imageAnalysis = await processImage(imagePath, message.body);
-                
-                // Enviar análise para o assistente processar
-                const prompt = `Baseado na análise da imagem a seguir, forneça uma resposta útil e contextualizada para o usuário:
+                if (!message.key.fromMe && message.message) {
+                    const from = message.key.remoteJid;
+                    
+                    // Ignorar mensagens de grupo
+                    if (from.includes('@g.us')) {
+                        return;
+                    }
+                    
+                    logger.logConversation('Mensagem recebida', from, '', '', null, {
+                        message_type: Object.keys(message.message)[0],
+                        timestamp: message.messageTimestamp
+                    });
+                    
+                    let responseText = '';
+                    
+                    // Processar diferentes tipos de mensagem
+                    if (message.message.conversation) {
+                        // Mensagem de texto simples
+                        const messageText = message.message.conversation;
+                        logger.logMedia('📝 MENSAGEM DE TEXTO DETECTADA', from, 'text', {
+                            content: messageText.substring(0, 100) + '...'
+                        });
+                        
+                        responseText = await processMessage(from, messageText, 'text');
+                        global.stats.messages++;
+                        
+                    } else if (message.message.extendedTextMessage) {
+                        // Mensagem de texto estendida
+                        const messageText = message.message.extendedTextMessage.text;
+                        logger.logMedia('📝 MENSAGEM DE TEXTO ESTENDIDA DETECTADA', from, 'text', {
+                            content: messageText.substring(0, 100) + '...'
+                        });
+                        
+                        responseText = await processMessage(from, messageText, 'text');
+                        global.stats.messages++;
+                        
+                    } else if (message.message.imageMessage) {
+                        // Mensagem de imagem
+                        logger.logMedia('🖼️ IMAGEM DETECTADA', from, 'image');
+                        
+                        try {
+                            logger.logMedia('📥 INICIANDO DOWNLOAD DA IMAGEM', from, 'image');
+                            
+                            const buffer = await downloadMediaMessage(message, 'buffer', {});
+                            
+                            if (!buffer || buffer.length === 0) {
+                                throw new Error('Buffer de imagem vazio');
+                            }
+                            
+                            logger.logMedia('✅ DOWNLOAD DA IMAGEM CONCLUÍDO', from, 'image', {
+                                buffer_size: buffer.length
+                            });
+                            
+                            // Salvar temporariamente
+                            const imagePath = path.join(MEDIA_DIR, `image_${Date.now()}.jpg`);
+                            fs.writeFileSync(imagePath, buffer);
+                            
+                            logger.logMedia('💾 IMAGEM SALVA TEMPORARIAMENTE', from, 'image', {
+                                path: imagePath
+                            });
+                            
+                            // Processar imagem
+                            const caption = message.message.imageMessage.caption || '';
+                            const imageAnalysis = await processImage(imagePath, caption);
+                            
+                            // Enviar análise para o assistente processar
+                            const prompt = `Baseado na análise da imagem a seguir, forneça uma resposta útil e contextualizada para o usuário:
 
 Análise da imagem: ${imageAnalysis}
 
-Mensagem do usuário: ${message.body || 'Usuário enviou uma imagem'}
+Mensagem do usuário: ${caption || 'Usuário enviou uma imagem'}
 
 Forneça uma resposta natural e útil baseada no conteúdo da imagem.`;
 
-                const response = await processMessage(prompt, userId);
-                await message.reply(response);
-
-                global.stats.images++;
-                logger.logMedia('🎯 PROCESSAMENTO DE IMAGEM FINALIZADO', userId, 'image', {
-                    result_length: response.length
-                });
-
-            } else if (message.type === 'ptt' || message.type === 'audio') {
-                logger.logMedia('🎵 ÁUDIO DETECTADO', userId, 'audio');
-                
-                logger.logMedia('📥 INICIANDO DOWNLOAD DO ÁUDIO', userId, 'audio');
-                
-                if (!media || !media.data) {
-                    throw new Error('Falha no download da mídia');
+                            responseText = await processMessage(from, prompt, 'image');
+                            global.stats.images++;
+                            
+                            logger.logMedia('🎯 PROCESSAMENTO DE IMAGEM FINALIZADO', from, 'image', {
+                                result_length: responseText.length
+                            });
+                            
+                        } catch (error) {
+                            logger.logError('Erro no processamento de imagem', error, { from });
+                            responseText = "❌ Desculpe, não consegui processar esta imagem. Tente enviar novamente.";
+                        }
+                        
+                    } else if (message.message.audioMessage) {
+                        // Mensagem de áudio
+                        logger.logMedia('🎵 ÁUDIO DETECTADO', from, 'audio');
+                        
+                        try {
+                            logger.logMedia('📥 INICIANDO DOWNLOAD DO ÁUDIO', from, 'audio');
+                            
+                            const buffer = await downloadMediaMessage(message, 'buffer', {});
+                            
+                            if (!buffer || buffer.length === 0) {
+                                throw new Error('Buffer de áudio vazio');
+                            }
+                            
+                            logger.logMedia('✅ DOWNLOAD DO ÁUDIO CONCLUÍDO', from, 'audio', {
+                                buffer_size: buffer.length
+                            });
+                            
+                            // Salvar temporariamente
+                            const audioPath = path.join(MEDIA_DIR, `audio_${Date.now()}.ogg`);
+                            fs.writeFileSync(audioPath, buffer);
+                            
+                            logger.logMedia('💾 ÁUDIO SALVO TEMPORARIAMENTE', from, 'audio', {
+                                path: audioPath
+                            });
+                            
+                            // Processar áudio
+                            const transcription = await processAudio(audioPath);
+                            responseText = await processMessage(from, transcription, 'audio');
+                            global.stats.audios++;
+                            
+                            logger.logMedia('🎯 PROCESSAMENTO DE ÁUDIO FINALIZADO', from, 'audio', {
+                                transcription_length: transcription.length,
+                                result_length: responseText.length
+                            });
+                            
+                        } catch (error) {
+                            logger.logError('Erro no processamento de áudio', error, { from });
+                            responseText = "❌ Desculpe, não consegui processar este áudio. Tente enviar novamente.";
+                        }
+                    }
+                    
+                    // Enviar resposta
+                    if (responseText) {
+                        await sock.sendMessage(from, { text: responseText });
+                        logger.logConversation('Resposta enviada', from, '', responseText, threadManager.getThreadId(from));
+                    }
                 }
-
-                const buffer = Buffer.from(media.data, 'base64');
-                
-                if (!buffer || buffer.length === 0) {
-                    throw new Error('Buffer de áudio vazio');
-                }
-
-                logger.logMedia('✅ DOWNLOAD DO ÁUDIO CONCLUÍDO', userId, 'audio', {
-                    buffer_size: buffer.length,
-                    mimetype: media.mimetype
-                });
-
-                // Salvar temporariamente
-                const tempDir = path.join(__dirname, 'media');
-                if (!fs.existsSync(tempDir)) {
-                    fs.mkdirSync(tempDir, { recursive: true });
-                }
-
-                const audioPath = path.join(tempDir, `audio_${Date.now()}.ogg`);
-                fs.writeFileSync(audioPath, buffer);
-
-                logger.logMedia('💾 ÁUDIO SALVO TEMPORARIAMENTE', userId, 'audio', {
-                    path: audioPath
-                });
-
-                // Processar áudio
-                const transcription = await processAudio(audioPath);
-                const response = await processMessage(transcription, userId);
-                await message.reply(response);
-
-                global.stats.audios++;
-                logger.logMedia('🎯 PROCESSAMENTO DE ÁUDIO FINALIZADO', userId, 'audio', {
-                    transcription_length: transcription.length,
-                    result_length: response.length
-                });
+            } catch (error) {
+                logger.logError('Erro no processamento de mensagem', error);
             }
-        } else {
-            // Mensagem de texto
-            logger.logConversation('📝 MENSAGEM DE TEXTO DETECTADA', userId, message.body);
-            
-            const response = await processMessage(message.body, userId);
-            await message.reply(response);
-
-            global.stats.messages++;
-            logger.logConversation('✅ RESPOSTA ENVIADA', userId, response);
-        }
+        });
 
     } catch (error) {
-        logger.logError('MESSAGE_PROCESSING_ERROR', error, message.from);
-        await message.reply("❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente.");
+        logger.logError('Erro ao conectar ao WhatsApp', error);
+        setTimeout(connectToWhatsApp, 5000);
     }
-});
+}
 
-// Servidor HTTP para interface web
-const http = require('http');
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    
+// Servidor web
+const app = express();
+
+app.get('/', (req, res) => {
     const uptime = Math.floor((Date.now() - global.stats.uptime) / 1000);
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
@@ -969,7 +1143,7 @@ const server = http.createServer((req, res) => {
             
             <div class="content">
                 <div class="status">
-                    ${global.isReady ? '✅ Sistema Online e Funcionando' : '🔄 Conectando ao WhatsApp...'}
+                    ${isConnected ? '✅ Sistema Online e Funcionando' : '🔄 Conectando ao WhatsApp...'}
                 </div>
                 
                 <div class="stats">
@@ -992,7 +1166,7 @@ const server = http.createServer((req, res) => {
                 </div>
                 
                 <div class="qr-container">
-                    ${global.qrCode || '<p>Aguardando QR Code...</p>'}
+                    ${qrCodeData || '<p>Aguardando QR Code...</p>'}
                 </div>
                 
                 <div class="instructions">
@@ -1042,26 +1216,25 @@ const server = http.createServer((req, res) => {
     </html>
     `;
     
-    res.end(html);
+    res.send(html);
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Servidor HTTP na porta ${PORT}`);
-    logger.logSuccess('HTTP_SERVER_STARTED', `Servidor HTTP iniciado na porta ${PORT}`, '', { port: PORT });
+    logger.logSuccess('Servidor HTTP iniciado', { port: PORT });
 });
 
-// Inicializar cliente WhatsApp
-logger.logInfo('🚀 Iniciando cliente WhatsApp...');
-client.initialize();
+// Inicializar conexão
+connectToWhatsApp();
 
-// Tratamento de erros não capturados
+// Tratamento de erros
 process.on('unhandledRejection', (reason, promise) => {
-    logger.logError('UNHANDLED_REJECTION', new Error(reason), '', { promise });
+    logger.logError('Rejeição não tratada', new Error(reason), { promise });
 });
 
 process.on('uncaughtException', (error) => {
-    logger.logError('UNCAUGHT_EXCEPTION', error);
+    logger.logError('Exceção não capturada', error);
     process.exit(1);
 });
 
