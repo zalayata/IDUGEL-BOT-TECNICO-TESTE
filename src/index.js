@@ -299,27 +299,34 @@ function removeCitations(text) {
     
     logger.logFormat('Iniciando limpeza de citações', {
         original_length: text.length,
-        has_citations: /【\d+†source】|\[\d+:\d+†source\]/.test(text)
+        has_citations: /【\d+†.*?】|\[\d+:\d+†.*?\]/.test(text)
     });
 
     let cleanText = text
+        // 🎯 CORREÇÃO PRINCIPAL: Remove citações no formato 【4:0†training-snippets-chatgpt-format.json】
+        .replace(/【\d+:\d+†.*?】/g, '')
         // Remove citações específicas: 【número†source】
         .replace(/【\d+†source】/g, '')
+        // Remove citações com qualquer conteúdo: 【número†qualquer-coisa】
+        .replace(/【\d+†.*?】/g, '')
         // Remove citações numéricas: [número], [número], (número)
         .replace(/【\d+】/g, '')
         .replace(/\[\d+\]/g, '')
         .replace(/\(\d+\)/g, '')
-        // 🎯 CORREÇÃO PRINCIPAL: Remove citações no formato [4:0†source]
+        // Remove citações no formato [4:0†source] e variações
+        .replace(/\[\d+:\d+†.*?\]/g, '')
         .replace(/\[\d+:\d+†source\]/g, '')
         // Remove outras variações de citações
         .replace(/\[\d+:\d+\]/g, '')
         .replace(/\(\d+:\d+\)/g, '')
         // Remove citações com asterisco: [4:0*source]
-        .replace(/\[\d+:\d+\*source\]/g, '')
+        .replace(/\[\d+:\d+\*.*?\]/g, '')
         // Remove citações com hífen: [4:0-source]
-        .replace(/\[\d+:\d+\-source\]/g, '')
+        .replace(/\[\d+:\d+\-.*?\]/g, '')
         // Remove qualquer variação de source entre colchetes
-        .replace(/\[\d+:\d+[†\*\-]?source\]/gi, '')
+        .replace(/\[\d+:\d+[†\*\-]?.*?\]/gi, '')
+        // Remove citações entre parênteses com dois pontos
+        .replace(/\(\d+:\d+†.*?\)/g, '')
         // Converte markdown de links para links diretos: [texto](link) → link
         .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
         // Remove linhas "Sources:" ou "Fontes:"
@@ -333,7 +340,7 @@ function removeCitations(text) {
         original_length: text.length,
         clean_length: cleanText.length,
         removed_chars: text.length - cleanText.length,
-        still_has_citations: /\[\d+:\d+/.test(cleanText)
+        still_has_citations: /【.*?】|\[\d+:\d+/.test(cleanText)
     });
 
     return cleanText;
