@@ -299,7 +299,7 @@ function removeCitations(text) {
     
     logger.logFormat('Iniciando limpeza de citações', {
         original_length: text.length,
-        has_citations: /【\d+†source】/.test(text)
+        has_citations: /【\d+†source】|\[\d+:\d+†source\]/.test(text)
     });
 
     let cleanText = text
@@ -309,8 +309,17 @@ function removeCitations(text) {
         .replace(/【\d+】/g, '')
         .replace(/\[\d+\]/g, '')
         .replace(/\(\d+\)/g, '')
+        // 🎯 CORREÇÃO PRINCIPAL: Remove citações no formato [4:0†source]
+        .replace(/\[\d+:\d+†source\]/g, '')
+        // Remove outras variações de citações
         .replace(/\[\d+:\d+\]/g, '')
         .replace(/\(\d+:\d+\)/g, '')
+        // Remove citações com asterisco: [4:0*source]
+        .replace(/\[\d+:\d+\*source\]/g, '')
+        // Remove citações com hífen: [4:0-source]
+        .replace(/\[\d+:\d+\-source\]/g, '')
+        // Remove qualquer variação de source entre colchetes
+        .replace(/\[\d+:\d+[†\*\-]?source\]/gi, '')
         // Converte markdown de links para links diretos: [texto](link) → link
         .replace(/\[([^\]]*)\]\(([^)]+)\)/g, '$2')
         // Remove linhas "Sources:" ou "Fontes:"
@@ -323,7 +332,8 @@ function removeCitations(text) {
     logger.logFormat('Citações removidas', {
         original_length: text.length,
         clean_length: cleanText.length,
-        removed_chars: text.length - cleanText.length
+        removed_chars: text.length - cleanText.length,
+        still_has_citations: /\[\d+:\d+/.test(cleanText)
     });
 
     return cleanText;
